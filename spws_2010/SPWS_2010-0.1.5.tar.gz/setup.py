@@ -1,0 +1,47 @@
+try:
+    from setuptools import setup
+except ImportError:
+    from distutils.core import setup
+
+setup(
+    name = 'SPWS_2010',
+    version = '0.1.5',
+    description = 'Python Interface to SharePoint 2010 Web Services',
+    url = 'https://github.com/The-Khimaira-Group/SPWS-2010',
+    download_url = 'https://github.com/The-Khimaira-Group/SPWS-2010/archive/0.1.tar.gz',
+    author = 'The Khimaira Group',
+    author_email = 'info@thekhimairagroup.com',
+    license = 'MIT',
+    classifiers = [
+        'Development Status :: 4 - Beta',
+        'License :: OSI Approved :: MIT License',
+        'Programming Language :: Python',
+        'Programming Language :: Python :: 2',
+        'Programming Language :: Python :: 2.6',
+        'Programming Language :: Python :: 2.7',
+        'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.2',
+        'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
+        'Programming Language :: Python :: 3.5',
+        'Programming Language :: Python :: 3.6',
+        'Programming Language :: Python :: 3.7',
+        'Intended Audience :: Developers',
+        'Intended Audience :: Information Technology',
+        'Intended Audience :: Financial and Insurance Industry',
+        'Intended Audience :: System Administrators',
+        'Topic :: Database',
+        'Topic :: Database :: Database Engines/Servers',
+        'Topic :: Internet :: WWW/HTTP',
+        'Topic :: Internet :: WWW/HTTP :: Dynamic Content :: Content Management System',
+        'Topic :: Office/Business',
+        'Topic :: Office/Business :: Financial',
+        'Topic :: Scientific/Engineering :: Information Analysis',
+        'Topic :: Scientific/Engineering :: Medical Science Apps.',
+        'Topic :: Software Development :: Libraries :: Application Frameworks',
+        'Topic :: Software Development :: Libraries :: Python Modules',
+    ],
+    keywords = ['SharePoint','SharePoint Web Services','SharePoint 2010','Business Intelligence','Automation'],
+    packages = ['SPWS_2010'],
+    install_requires = ['requests', 'xmltodict', 'requests_ntlm'],
+)
