@@ -1,0 +1,1 @@
+from .cryptocoin import CryptoCoin
