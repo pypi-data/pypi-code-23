@@ -1,0 +1,2 @@
+from rhumbix_csv_uploader import cost_code_processor
+cost_code_processor.process_csv("rhumbix_csv_uploader/test/exampleCSVs/rhumbix_job_cost_2.csv")
