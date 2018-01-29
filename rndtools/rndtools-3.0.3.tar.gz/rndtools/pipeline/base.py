@@ -1,0 +1,103 @@
+from abc import abstractmethod
+from collections import defaultdict
+from operator import itemgetter
+
+import pathos.pools as pp
+import six
+from six.moves import map
+from sklearn.base import BaseEstimator
+from tqdm import tqdm
+
+
+class Step(BaseEstimator):
+    GIVE_ALL = False
+
+    @abstractmethod
+    def transform(self, params):
+        pass
+
+    def fit_transform(self, params):
+        return self.transform(params)
+
+
+class Pipeline(Step):
+    def __init__(self, *steps, **kwargs):
+        self.show_progressbar = kwargs.get('show_progressbar', True)
+        self.parallel = kwargs.get('parallel', False)
+        self.steps = steps
+
+    def transform(self, params, f='transform'):
+        was_single = False
+
+        if isinstance(params, dict):
+            params = [params]
+            was_single = True
+
+        result = self._transform_single(params, f)
+
+        if was_single:
+            return result[0]
+
+        return result
+
+    def fit_transform(self, params):
+        return self.transform(params, f='fit_transform')
+
+    def _transform_single(self, rows, f):
+        for name, step in self.steps:
+            func = getattr(step, f)
+
+            aa = [(i, row) for i, row in enumerate(rows) if 'error' in row and row['error'] == True]
+            indices = map(itemgetter(0), aa)
+            for index in sorted(indices, reverse=True):
+                del rows[index]
+
+            if step.GIVE_ALL:
+                new_rows = func(rows)
+
+                if isinstance(new_rows, list):
+                    rows = new_rows
+            else:
+                if self.parallel:
+                    mapper = pp.ProcessPool(4).imap
+                else:
+                    mapper = map
+
+                mapper = mapper(func, rows)
+
+                if self.show_progressbar:
+                    progressbar = tqdm(mapper, total=len(rows), desc=name)
+                else:
+                    progressbar = mapper
+
+                new_rows = list(progressbar)
+
+                for n, o in zip(new_rows, rows):
+                    if isinstance(n, dict):
+                        o.update(n)
+
+            for index, row in sorted(aa, reverse=False, key=itemgetter(0)):
+                rows.insert(index, row)
+
+        return rows
+
+    def set_params(self, **params):
+        parameters_to_set = defaultdict(dict)
+        for k, v in six.iteritems(params):
+            transformer, param = k.split('__', 1)
+            parameters_to_set[transformer][param] = v
+
+        for name, transformer in self.steps:
+            transformer.set_params(**parameters_to_set[name])
+
+    def get_params(self, *args, **kwargs):
+        output = {}
+
+        for name, transformer in self.steps:
+            for p, v in six.iteritems(transformer.get_params()):
+                if isinstance(v, Pipeline):
+                    continue
+
+                output['{}__{}'.format(name, p)] = v
+
+        return output
