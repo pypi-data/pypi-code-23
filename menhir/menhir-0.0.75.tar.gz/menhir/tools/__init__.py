@@ -1,0 +1,15 @@
+all_tools = [
+    'codecov',
+    'docker',
+    'dynamodb',
+    'exec',
+    'git',
+    'multiproject',
+    'pprint',
+    'pyenv',
+    'pylama',
+    'pytest',
+    'setup_py',
+    'terraform',
+    'write_state',
+]
