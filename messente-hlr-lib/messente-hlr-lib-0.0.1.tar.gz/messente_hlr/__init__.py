@@ -1,0 +1,1 @@
+__version__ = "0.0.1"  # FIXME: duplicate version specification (setup.py)
