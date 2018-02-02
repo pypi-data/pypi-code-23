@@ -1,0 +1,4 @@
+# multiple comparison
+
+import snapit
+
