@@ -1,0 +1,2 @@
+class EmptyIterableError(Exception):
+    pass
