@@ -1,0 +1,174 @@
+import logging
+from typing import Union
+
+from abc import abstractmethod, ABCMeta
+from collections import defaultdict, namedtuple
+from twisted.internet import reactor
+from twisted.internet.defer import fail, Deferred, succeed, inlineCallbacks
+from twisted.python import failure
+
+from vortex.DeferUtil import vortexLogFailure
+from vortex.Payload import Payload
+from vortex.PayloadEndpoint import PayloadEndpoint
+from vortex.TupleSelector import TupleSelector
+from vortex.VortexABC import SendVortexMsgResponseCallable
+from vortex.VortexFactory import VortexFactory
+
+logger = logging.getLogger(__name__)
+
+
+class TuplesProviderABC(metaclass=ABCMeta):
+    @abstractmethod
+    def makeVortexMsg(self, filt: dict,
+                      tupleSelector: TupleSelector) -> Union[Deferred, bytes]:
+        """ Make Vortex Msg
+
+        The method generates the vortexMsg for the vortex to send.
+
+        :param filt: The filt for the payload.
+        :param tupleSelector: The tuple selector us used to determing which tuples to
+        send back,
+        """
+
+
+_ObserverDetails = namedtuple("_ObserverDetails", ["vortexUuid", "observerName"])
+
+
+class TupleDataObservableHandler:
+    def __init__(self, observableName, additionalFilt=None, subscriptionsEnabled=True):
+        """ Constructor
+
+        :param observableName: The name of this observable
+
+        :param additionalFilt: Any additional filter keys that are required
+
+        :param subscriptionsEnabled: Should subscriptions be enabled (default)
+        """
+        self._observableName = observableName
+        self._subscriptionsEnabled = subscriptionsEnabled
+        self._filt = dict(name=observableName,
+                          key="tupleDataObservable")
+        if additionalFilt:
+            self._filt.update(additionalFilt)
+
+        self._endpoint = PayloadEndpoint(self._filt, self._process)
+
+        self._observerDetailsByTupleSelector = defaultdict(set)
+
+        self._tupleProvidersByTupleName = {}
+
+    def addTupleProvider(self, tupleName, provider: TuplesProviderABC):
+        """ Add Tuple Provider
+
+        """
+        assert not tupleName in self._tupleProvidersByTupleName, (
+                "Observable:%s, Tuple name %s is already registered" %
+                (self._observableName, tupleName))
+
+        assert isinstance(provider, TuplesProviderABC), (
+                "Observable:%s, provider must be an instance of TuplesProviderABC"
+                % self._observableName)
+
+        self._tupleProvidersByTupleName[tupleName] = provider
+
+    def hasTupleProvider(self, tupleName: str):
+        return tupleName in self._tupleProvidersByTupleName
+
+    def shutdown(self):
+        self._endpoint.shutdown()
+
+    def _createVortexMsg(self, filt, tupleSelector: TupleSelector) -> Deferred:
+        tupleProvider = self._tupleProvidersByTupleName.get(tupleSelector.name)
+        assert tupleProvider, (
+                "Observable:%s, No providers registered for tupleName %s"
+                % (self._observableName, tupleSelector.name))
+
+        vortexMsgDefer = self._customMaybeDeferred(
+            tupleProvider.makeVortexMsg, filt, tupleSelector)
+        vortexMsgDefer.addErrback(vortexLogFailure, logger)
+        return vortexMsgDefer
+
+    @inlineCallbacks
+    def _process(self, payload: Payload, vortexUuid: str,
+                 sendResponse: SendVortexMsgResponseCallable, **kwargs):
+        tupleSelector = payload.filt["tupleSelector"]
+        tsStr = tupleSelector.toJsonStr()
+
+        observerDetails = _ObserverDetails(vortexUuid, payload.filt.get("observerName"))
+
+        # Handle unsubscribe
+        if payload.filt.get("unsubscribe"):
+            try:
+                self._observerDetailsByTupleSelector[tsStr].remove(observerDetails)
+            except KeyError:
+                pass
+
+            if not self._observerDetailsByTupleSelector[tsStr]:
+                del self._observerDetailsByTupleSelector[tupleSelector.toJsonStr()]
+
+            return
+
+        # Add support for just getting data, no subscription.
+        if self._subscriptionsEnabled and payload.filt.get("subscribe", True):
+            self._observerDetailsByTupleSelector[tsStr].add(observerDetails)
+
+        vortexMsg = yield self._createVortexMsg(payload.filt, tupleSelector)
+        d = sendResponse(vortexMsg)
+        d.addErrback(lambda f: logger.exception(f.getStackTrace()))
+
+    def notifyOfTupleUpdate(self, tupleSelector: TupleSelector) -> None:
+        """ Notify Of Tuple Update
+
+        This method tells the observable that an update has occurred and that it should
+        send new data to it's observers.
+
+        Tuple selectors should be identical to the data being observed.
+
+        :param tupleSelector: A tuple selector that describes the scope of the update.
+        :returns: None
+
+        """
+        reactor.callLater(0, self._notifyOfTupleUpdateInMain, tupleSelector)
+
+    @inlineCallbacks
+    def _notifyOfTupleUpdateInMain(self, tupleSelector: TupleSelector):
+        tsStr = tupleSelector.toJsonStr()
+
+        # Filter out the offline observables
+        onlineUuids = set(VortexFactory.getRemoteVortexUuids())
+        observerDetails = self._observerDetailsByTupleSelector[tsStr]
+        for od in list(observerDetails):
+            if od.vortexUuid not in onlineUuids:
+                observerDetails.remove(od)
+
+        # Get / update the list of observing UUIDs
+        if not observerDetails:
+            del self._observerDetailsByTupleSelector[tsStr]
+            return
+
+        # Create the vortexMsg
+        filt = dict(tupleSelector=tupleSelector)
+        filt.update(self._filt)
+        vortexMsg = yield self._createVortexMsg(filt, tupleSelector)
+
+        # Send the vortex messages
+        for od in observerDetails:
+            d = VortexFactory.sendVortexMsg(vortexMsgs=vortexMsg,
+                                            destVortexUuid=od.vortexUuid)
+            d.addErrback(vortexLogFailure, logger)
+
+    def _customMaybeDeferred(self, f, *args, **kw):
+        try:
+            result = f(*args, **kw)
+        except Exception as e:
+            logger.error("TupleDataObservableHandler:%s TupleProvider failed",
+                         self._observableName)
+            logger.exception(e)
+            return fail(failure.Failure(e))
+
+        if isinstance(result, Deferred):
+            return result
+        elif isinstance(result, failure.Failure):
+            return fail(result)
+        else:
+            return succeed(result)
