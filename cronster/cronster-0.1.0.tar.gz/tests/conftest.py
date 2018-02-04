@@ -1,0 +1,1 @@
+# cronster py.test configuration
