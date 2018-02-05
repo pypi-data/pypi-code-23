@@ -1,0 +1,102 @@
+"""
+Module to control Sesame devices.
+"""
+import json
+
+API_SESAME_ENDPOINT = '/sesames/{}'
+API_SESAME_CONTROL_ENDPOINT = '/sesames/{}/control'
+
+
+class Sesame(object):
+    """Representation of a Sesame device."""
+
+    account = None
+    _device_id = None
+    state = {}
+    async_update = False
+
+    def __init__(self, account, state, async_update=False):
+        """Initialise the Sesame device."""
+        self.account = account
+        self._device_id = state['device_id']
+        self.state = state
+        self.async_update = async_update
+
+    def update_state(self, async_update=True):
+        """Update the internal state of the Sesame."""
+        self.async_update = async_update
+
+        endpoint = API_SESAME_ENDPOINT.format(self._device_id)
+        response = self.account.request('GET', endpoint)
+        if response is None or response.status_code != 200:
+            return
+
+        state = json.loads(response.text)
+        # device_id attribute isn't set for updates
+        state['device_id'] = self._device_id
+        self.state = state
+
+    @property
+    def device_id(self):
+        """Return the Sesame ID."""
+        return self._device_id
+
+    @property
+    def nickname(self):
+        """Return the Sesame nickname."""
+        if not self.async_update:
+            self.update_state(False)
+        return self.state['nickname']
+
+    @property
+    def is_unlocked(self):
+        """Return True if Sesame is unlocked, else False."""
+        if not self.async_update:
+            self.update_state(False)
+        return self.state['is_unlocked']
+
+    @is_unlocked.setter
+    def is_unlocked(self, value):
+        """Set is_unlocked property."""
+        if value:
+            self.unlock()
+        else:
+            self.lock()
+
+    @property
+    def api_enabled(self):
+        """Return True if Sesame is API-enabled, else False."""
+        if not self.async_update:
+            self.update_state(False)
+        return self.state['api_enabled']
+
+    @property
+    def battery(self):
+        """Return Sesame battery status as an integer between 0 and 100."""
+        if not self.async_update:
+            self.update_state(False)
+        return self.state['battery']
+
+    def lock(self):
+        """Lock the Sesame. Return True on success, else False."""
+        endpoint = API_SESAME_CONTROL_ENDPOINT.format(self.device_id)
+        payload = {'type': 'lock'}
+        response = self.account.request('POST', endpoint, payload=payload)
+        if response is None:
+            return False
+        if response.status_code == 200 or response.status_code == 204:
+            self.state['is_unlocked'] = False
+            return True
+        return False
+
+    def unlock(self):
+        """Unlock the Sesame. Return True on success, else False."""
+        endpoint = API_SESAME_CONTROL_ENDPOINT.format(self.device_id)
+        payload = {'type': 'unlock'}
+        response = self.account.request('POST', endpoint, payload=payload)
+        if response is None:
+            return False
+        if response.status_code == 200 or response.status_code == 204:
+            self.state['is_unlocked'] = True
+            return True
+        return False
