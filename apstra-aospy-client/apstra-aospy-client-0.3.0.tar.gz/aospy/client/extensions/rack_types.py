@@ -1,0 +1,16 @@
+# Copyright 2014-present, Apstra, Inc. All rights reserved.
+#
+# This source code is licensed under End User License Agreement found in the
+# LICENSE file at http://www.apstra.com/eula
+
+
+from ..group import Group
+
+
+class RackTypes(Group):
+    group_endpoint = '/api/design/rack-types'
+    groupitem_label = 'display_name'
+
+
+def plugin(aos):
+    return RackTypes(aos)
