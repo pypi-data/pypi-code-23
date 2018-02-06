@@ -1,0 +1,3 @@
+
+class WFException(Exception):
+    pass
