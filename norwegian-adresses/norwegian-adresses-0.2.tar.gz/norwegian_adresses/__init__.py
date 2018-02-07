@@ -1,0 +1,1 @@
+from norwegian_adresses.pymongo_backend import NorAddress
