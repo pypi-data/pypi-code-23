@@ -1,0 +1,1 @@
+from .singularity import Singularity
