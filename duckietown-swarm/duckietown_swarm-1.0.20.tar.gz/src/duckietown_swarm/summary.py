@@ -1,0 +1,180 @@
+from Queue import Empty
+from datetime import datetime
+from duckietown_swarm.ipfs_utils import IPFSInterface
+from duckietown_swarm.irc2 import find_more_information, UnexpectedFormat, \
+    InvalidHash
+import json
+import socket
+import time
+
+from system_cmd.meat import system_cmd_result
+
+
+def get_at_least_one(queue, timeout):
+    """ This waits for one, and then waits at most timeout. """
+    s = []
+    t0 = time.time()
+    while True:
+        try:
+            block = len(s) == 0
+            x = queue.get(block=block, timeout=timeout)
+            s.append(x)
+
+            if time.time() < t0 + timeout:
+                wait = t0 + timeout - time.time()
+                time.sleep(wait)
+        except Empty:
+            break
+
+    return s
+
+
+def publisher_summary():
+    from duckietown_swarm.irc2 import Queues
+    known = set()
+
+    ipfsi = IPFSInterface()
+
+    KEY_NAME = 'summary'
+    keys = ipfsi.get_keys()
+    if not KEY_NAME in keys:
+        ipfsi.gen_key(KEY_NAME, 'rsa', 2048)
+        keys = ipfsi.get_keys()
+
+    path = '/ipns/' + keys[KEY_NAME]
+    print('You will see my summaries at %s' % path)
+
+    time.sleep(20)
+    while True:
+        print('summary')
+        timeout = 30
+
+        t0 = time.time()
+        hashes = get_at_least_one(Queues.to_summary_publisher, timeout)
+        if not hashes:
+            continue
+        print('get_at_least_one: %.1f s' % (time.time() - t0))
+
+        print('Creating summary for %d more' % (len(hashes)))
+        n0 = len(known)
+        known.update(hashes)
+        print('In total, we go from %s to %s' % (n0, len(known)))
+
+        summary_hash = get_summary(known, permanent=path)
+        print('summary hash: %s' % summary_hash)
+        ipfsi.publish(KEY_NAME, summary_hash)
+        print('published to %s ' % keys[KEY_NAME])
+
+
+def get_summary(known, permanent):
+    m = MakeIPFS2()
+    s = '<html><head></head><body><pre>\n'
+
+    s += '\n Created: %s' % str(datetime.now())[:16]
+    s += '\n Host: %s' % socket.gethostname()
+    s += '\n Permanent path: <a href="%s">%s</a>' % (permanent, permanent)
+
+    s += '\n'
+    found = []
+    others = []
+    invalid = []
+    for k in known:
+        try:
+            f = find_more_information(k)
+            found.append(f)
+        except UnexpectedFormat:
+            others.append(k)
+        except InvalidHash:
+            invalid.append(k)
+
+    s += '<h2>Good uploads</h2>'
+    already = set()
+    redundant = []
+    found = sorted(found, key=lambda _: _.ctime)
+
+    def description(f):
+        ss = ''
+        ss += '<a href="/ipfs/%s">info</a>' % (f.ipfs_info)
+        ss += ' <a href="/ipfs/%s">raw</a>' % (f.ipfs)
+        ss += ' providers %3d %3d' % (len(f.providers_info), len(f.providers_payload))
+        ss += ' ' + str(f.ctime)[:16]
+        ss += ' %5d MB' % (f.size / (1000.0 * 1000))
+        ss += ' <a href="/ipfs/%s">%s</a>' % (f.ipfs_payload, '%20s' % f.filename)
+        ss += ' uploaded by %s : %s @ %s' % (f.upload_node, f.upload_user, f.upload_host)
+        return ss
+
+    for f in found:
+        if f.ipfs_payload in already:
+            redundant.append(f)
+            continue
+        already.add(f.ipfs_payload)
+        m.add_file(f.ipfs_payload, f.ipfs_payload, f.size)
+        m.add_file(f.ipfs_info, f.ipfs_info, 0)
+        s += '\n' + description(f)
+
+    if redundant:
+        s += '<h2>Different uploads of same payload</h2>'
+        for h in redundant:
+            s += '\n' + description(h)
+
+    if others:
+        s += '<h2>Other uploads</h2>'
+        for h in others:
+            m.add_file(h, h, 0)
+            s += '\n<a href="%s">%s</a>' % (h, h)
+
+    if invalid:
+        s += '<h2>Invalid hashes</h2>'
+        for h in invalid:
+            s += '\n' + h
+
+    s += '\n</pre></body>'
+
+    m.add_file_content('index.html', s)
+
+    return m.get_ipfs_hash()
+
+
+class MakeIPFS2(object):
+
+    def __init__(self):
+        self.links = []
+        self.total_file_size = 0
+
+    def add_file(self, filename, ipfs, size):
+        x = {'Name': filename, 'Hash': ipfs, "Size": size}
+        self.links.append(x)
+        self.total_file_size += size
+
+    def add_file_content(self, filename, s):
+        hashed = get_hash_for_bytes_(s)
+        self.add_file(filename, hashed, len(s))
+
+    def get_dag(self):
+        result = {'Data': u"\u0008\u0001", 'Links': self.links}
+        return result
+
+    def total_size(self):
+        return self.total_file_size
+
+    def get_ipfs_hash(self):
+        dag = self.get_dag()
+        dag_json = json.dumps(dag)
+
+        cmd = ['ipfs', 'object', 'put']
+        cwd = '.'
+        res = system_cmd_result(cwd, cmd, raise_on_error=True,
+                                write_stdin=dag_json)
+        hashed = res.stdout.split()[1]
+        assert 'Qm' in hashed, hashed
+        return hashed
+
+
+def get_hash_for_bytes_(s):
+    cmd = ['ipfs', 'add']
+    cwd = '.'
+    res = system_cmd_result(cwd, cmd, raise_on_error=True,
+                            write_stdin=s)
+    hashed = res.stdout.split()[1]
+    assert 'Qm' in hashed, hashed
+    return hashed
