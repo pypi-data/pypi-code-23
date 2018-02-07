@@ -1,0 +1,3 @@
+from vumi_unidecode_middleware.unidecode_middleware import UnidecodeMiddleware
+
+UnidecodeMiddleware
