@@ -1,0 +1,1 @@
+"""Cassiny's CLI."""
