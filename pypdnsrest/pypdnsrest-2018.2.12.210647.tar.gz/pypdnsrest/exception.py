@@ -1,0 +1,2 @@
+class PowerDnsRestApiException(Exception):
+    pass
