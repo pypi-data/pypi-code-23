@@ -1,0 +1,6 @@
+
+from .core import *
+
+__version__ = '1.0'
+__author__ = 'Oleg Karakin aka blins'
+__email__ = 'blins@blins.org'
