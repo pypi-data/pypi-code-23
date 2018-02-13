@@ -1,0 +1,5 @@
+
+METADATA_USER_ID_STR = 'user'
+METADATA_EXAMPLE_ID_STR = 'is_example'
+METADATA_PUBLIC_ID_STR = 'is_public'
+METADATA_SHARED_WITH_STR = 'share'
