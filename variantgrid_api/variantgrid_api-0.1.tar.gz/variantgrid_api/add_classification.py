@@ -1,0 +1,18 @@
+from __future__ import print_function
+
+from variantgrid_api.api import VariantGridAPI
+
+
+def add_classification_handle_args(args):
+    print(args)
+    
+    api = VariantGridAPI.from_args(args)
+
+    classification = None
+    if args.dbsnp:
+        classification = api.add_classifications_for_dbsnp(args.dbsnp, args.classification, args.public)
+    elif args.locus:
+        classification = api.add_classifications_for_variant(args.variant, args.classification, args.public)
+
+        print("created classification: %s" % classification)
+
