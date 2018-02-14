@@ -1,0 +1,13 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+
+import pycoraldb
+
+if __name__ == '__main__':
+    # client = pycoraldb.CoralDBClient('coraldb://127.0.0.1:5266')
+    client = pycoraldb.CoralDBClient('coraldb://192.168.2.150:59020')
+    #client.login('test', '123456')
+    client._token = 'b168e5b201044b7a89a15749a60d2ee2'
+    pr = client.map(lambda x: x * x, range(5)).commit()
+    pr.wait()
+    print pr.get()
