@@ -1,0 +1,29 @@
+from setuptools import setup
+
+setup(name='bitimages',
+      version='0.1',
+      description='test',
+      author='basia',
+      author_email='barbara.kistowska@bitcomp.fi',
+      license='MIT',
+      packages=['bitimages'],
+      install_requires=[
+          'apipkg==1.4',
+          'astroid==1.5.3',
+          'execnet==1.4.1',
+          'ExifRead==2.1.2',
+          'isort==4.2.15',
+          'lazy-object-proxy==1.3.1',
+          'mccabe==0.6.1',
+          'olefile==0.44',
+          'Pillow==4.0.0',
+          'py==1.4.34',
+          'pycodestyle==2.3.1',
+          'pydocstyle==2.0.0',
+          'pyflakes==1.5.0',
+          'pylama==7.4.1',
+          'six==1.10.0',
+          'snowballstemmer==1.2.1',
+          'wrapt==1.10.10'
+      ],
+      zip_safe=False)
