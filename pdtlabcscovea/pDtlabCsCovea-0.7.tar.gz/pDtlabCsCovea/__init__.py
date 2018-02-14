@@ -1,0 +1,14 @@
+#!/usr/bin/python2.7
+#-*- coding: utf-8 -*-
+ 
+__version__ = "0.2"
+
+from datetime import datetime
+import git  
+import re
+import os
+
+from git import *
+import gitdb
+from gitdb import *
+from git import Repo
