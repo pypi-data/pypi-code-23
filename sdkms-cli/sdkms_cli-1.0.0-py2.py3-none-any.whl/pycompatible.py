@@ -1,0 +1,69 @@
+"""
+Python 2 and 3 compatible function
+"""
+import sys
+import base64
+import binascii
+# check python version in use
+PY3 = sys.version_info[0] >= 3
+ENCODING = 'latin-1'
+
+
+# It is internal function. Only call it from if PY3: block
+
+
+def _to_bytes(s):
+    if type(s) is str:
+        s = s.encode(ENCODING)
+    return s
+
+
+def b64_encode(s):
+    if PY3:
+        return base64.b64encode(_to_bytes(s)).decode(ENCODING)
+
+    return base64.b64encode(s)
+
+
+def b64_decode(s):
+    if PY3:
+        # signature, wrap and aes operation was failing without 'latin-1'
+        # 'latin-1' make python3 to behave like python2 for encoding/decoding
+        return base64.b64decode(_to_bytes(s)).decode(ENCODING)
+
+    return base64.b64decode(s)
+
+
+def hex_decode(hex_str):
+    if PY3:
+        return binascii.unhexlify(_to_bytes(hex_str)).decode(ENCODING)
+
+    return binascii.unhexlify(hex_str)
+
+
+def hex_encode(s):
+    if PY3:
+        return binascii.hexlify(_to_bytes(s)).decode(ENCODING)
+
+    return binascii.hexlify(s)
+
+# As we are opening file in wb mode, Python3 require data type should be byte to write
+
+
+def to_bytes(s):
+    if PY3:
+        return bytes(s, encoding=ENCODING)
+
+    return bytes(s)
+
+
+def to_byte_array(s):
+    if PY3:
+        if type(s) is bytearray:
+            return s
+        if type(s) is str:
+            return bytearray(s, encoding=ENCODING)
+        return bytearray(s)
+
+    return bytearray(s)
+
