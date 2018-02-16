@@ -1,0 +1,210 @@
+# -*- coding: utf-8 -*-
+# Copyright © 2007-2017 Red Hat, Inc.
+#
+# This file is part of Bodhi.
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+"""The CLI tool for triggering update pushes."""
+from sqlalchemy.sql import or_
+import click
+
+from bodhi.server import (initialize_db, get_koji, setup_buildsys)
+from bodhi.server.config import config
+from bodhi.server.models import (Compose, ComposeState, Release, ReleaseState, Build, Update,
+                                 UpdateRequest)
+from bodhi.server.util import transactional_session_maker
+import bodhi.server.notifications
+
+
+_koji = None
+
+
+def update_sig_status(update):
+    """Update build signature status for builds in update."""
+    global _koji
+    if _koji is None:
+        setup_buildsys()
+        _koji = get_koji(None)
+    for build in update.builds:
+        if not build.signed:
+            build_tags = build.get_tags(_koji)
+            if update.release.pending_signing_tag not in build_tags:
+                click.echo('Build %s was refreshed as signed' % build.nvr)
+                build.signed = True
+            else:
+                click.echo('Build %s still unsigned' % build.nvr)
+
+
+@click.command()
+@click.option('--builds', help='Push updates for a comma-separated list of builds')
+@click.option('--cert-prefix', default="shell",
+              help="The prefix of a fedmsg cert used to sign the message")
+@click.option('--releases', help=('Push updates for a comma-separated list of releases (default: '
+                                  'current and pending releases)'))
+@click.option('--request', default='testing,stable',
+              help='Push updates with a specific request (default: testing,stable)')
+@click.option('--resume', help='Resume one or more previously failed pushes',
+              is_flag=True, default=False)
+@click.option('--username', prompt=True)
+@click.version_option(message='%(version)s')
+def push(username, cert_prefix, **kwargs):
+    """Push builds out to the repositories."""
+    resume = kwargs.pop('resume')
+    resume_all = False
+
+    initialize_db(config)
+    db_factory = transactional_session_maker()
+    composes = []
+    with db_factory() as session:
+        if not resume and session.query(Compose).count():
+            click.confirm('Existing composes detected: {}. Do you wish to resume them all?'.format(
+                ', '.join([str(c) for c in session.query(Compose).all()])), abort=True)
+            resume = True
+            resume_all = True
+
+        # If we're resuming a push
+        if resume:
+            for compose in session.query(Compose).all():
+                if len(compose.updates) == 0:
+                    # Compose objects can end up with 0 updates in them if the masher ejects all the
+                    # updates in a compose for some reason. Composes with no updates cannot be
+                    # serialized because their content_type property uses the content_type of the
+                    # first update in the Compose. Additionally, it doesn't really make sense to go
+                    # forward with running an empty Compose. It makes the most sense to delete them.
+                    click.echo("{} has no updates. It is being removed.".format(compose))
+                    session.delete(compose)
+                    continue
+
+                if not resume_all and not click.confirm('Resume {}?'.format(compose)):
+                    continue
+
+                # Reset the Compose's state and error message.
+                compose.state = ComposeState.requested
+                compose.error_message = u''
+
+                composes.append(compose)
+        else:
+            updates = []
+            # Accept both comma and space separated request list
+            requests = kwargs['request'].replace(',', ' ').split(' ')
+            requests = [UpdateRequest.from_string(val) for val in requests]
+
+            query = session.query(Update).filter(Update.request.in_(requests))
+
+            if kwargs.get('builds'):
+                query = query.join(Update.builds)
+                query = query.filter(
+                    or_(*[Build.nvr == build for build in kwargs['builds'].split(',')]))
+
+            query = _filter_releases(session, query, kwargs.get('releases'))
+
+            for update in query.all():
+                # Skip unsigned updates (this checks that all builds in the update are signed)
+                update_sig_status(update)
+
+                if not update.signed:
+                    click.echo('Warning: %s has unsigned builds and has been skipped' %
+                               update.title)
+                    continue
+
+                updates.append(update)
+
+            composes = Compose.from_updates(updates)
+            for c in composes:
+                session.add(c)
+
+            # We need to flush so the database knows about the new Compose objects, so the
+            # Compose.updates relationship will work properly. This is due to us overriding the
+            # primaryjoin on the relationship between Composes and Updates.
+            session.flush()
+
+            # Now we need to refresh the composes so their updates property will not be empty.
+            for compose in composes:
+                session.refresh(compose)
+
+        # Now we need to sort the composes so their security property can be used to prioritize
+        # security updates. The security property relies on the updates property being
+        # non-empty, so this must happen after the refresh above.
+        composes = sorted(composes)
+
+        for compose in composes:
+            click.echo('\n\n===== {} =====\n'.format(compose))
+            for update in compose.updates:
+                click.echo(update.title)
+
+        if composes:
+            click.confirm('\n\nPush these {:d} updates?'.format(
+                sum([len(c.updates) for c in composes])), abort=True)
+            click.echo('\nLocking updates...')
+        else:
+            click.echo('\nThere are no updates to push.')
+
+        composes = [c.__json__() for c in composes]
+
+    if composes:
+        click.echo('\nSending masher.start fedmsg')
+        # Because we're a script, we want to send to the fedmsg-relay,
+        # that's why we say active=True
+        bodhi.server.notifications.init(active=True, cert_prefix=cert_prefix)
+        bodhi.server.notifications.publish(
+            topic='masher.start',
+            msg=dict(
+                api_version=2,
+                composes=composes,
+                resume=resume,
+                agent=username,
+            ),
+            force=True,
+        )
+
+
+def _filter_releases(session, query, releases=None):
+    """
+    Filter the given query by releases.
+
+    Apply a filter() transformation to the given query on Updates to filter updates that match the
+    given releases argument. If releases evaluates "Falsey", this function will filter for Updates
+    that are part of a current Release.
+
+    :param session:  The database session
+    :param query:    An Update query that we want to modify by filtering based on Releases
+    :param releases: A comma-separated string of release names
+
+    :returns:        A filtered version of query with an additional filter based on releases.
+    """
+    # We will store models.Release object here that we want to filter by
+    _releases = []
+
+    if releases:
+        for r in releases.split(','):
+            release = session.query(Release).filter(
+                or_(Release.name == r,
+                    Release.name == r.upper(),
+                    Release.version == r)).first()
+            if not release:
+                raise click.BadParameter('Unknown release: %s' % r)
+            else:
+                _releases.append(release)
+    else:
+        # Since the user didn't ask for specific Releases, let's just filter for releases that are
+        # current or pending.
+        _releases = session.query(Release).filter(or_(Release.state == ReleaseState.current,
+                                                      Release.state == ReleaseState.pending))
+
+    return query.filter(or_(*[Update.release == r for r in _releases]))
+
+
+if __name__ == '__main__':
+    push()
