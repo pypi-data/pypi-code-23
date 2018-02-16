@@ -1,0 +1,34 @@
+#!/usr/bin/env python
+
+import time
+import datetime
+import math
+import csv
+import random
+import string
+import numpy as np
+import pandas as pd
+from pandas import DataFrame, read_csv
+import matplotlib.pyplot as plt
+#import MySQLdb
+
+from train import art_train
+from test import art_test
+
+#train_data = pd.read_csv('sample-data/train-example.csv').as_matrix()
+#test_data = pd.read_csv('sample-data/test-example.csv').as_matrix()
+#x = train_data[:,1:3]
+#y = test_data[:,1:3]
+
+data = pd.read_csv('sample-data/xor_train.csv').as_matrix()
+x = data[0:5,0:3]
+print x
+y = data[3:7,0:3]
+print y
+
+
+r = 0.8
+Tmatrix = art_train(x,rho=r) #,beta=0.000001,alpha=1.0,nep=1)
+#print Tmatrix
+T = art_test(y,Tmatrix,rho=r) #,beta=0.000001,alpha=1.0,nep=1)
+print T
