@@ -1,0 +1,2 @@
+def shadowHack():
+	return "ShadowHack!!"
