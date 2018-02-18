@@ -1,0 +1,394 @@
+# -*- coding: utf-8 -*-
+"""
+Common Utilities
+================
+
+Defines common utilities objects that don't fall in any specific category.
+
+References
+----------
+-   :cite:`Kienzle2011a` : Kienzle, P., Patel, N., & Krycka, J. (2011).
+    refl1d.numpyerrors - Refl1D v0.6.19 documentation. Retrieved January 30,
+    2015, from http://www.reflectometry.org/danse/docs/refl1d/_modules/\
+refl1d/numpyerrors.html
+"""
+
+from __future__ import division, unicode_literals
+
+import inspect
+import functools
+import numpy as np
+import warnings
+from copy import deepcopy
+from six import string_types
+
+from colour.constants import INTEGER_THRESHOLD
+
+__author__ = 'Colour Developers'
+__copyright__ = 'Copyright (C) 2013-2018 - Colour Developers'
+__license__ = 'New BSD License - http://opensource.org/licenses/BSD-3-Clause'
+__maintainer__ = 'Colour Developers'
+__email__ = 'colour-science@googlegroups.com'
+__status__ = 'Production'
+
+__all__ = [
+    'handle_numpy_errors', 'ignore_numpy_errors', 'raise_numpy_errors',
+    'print_numpy_errors', 'warn_numpy_errors', 'ignore_python_warnings',
+    'batch', 'is_openimageio_installed', 'is_pandas_installed', 'is_iterable',
+    'is_string', 'is_numeric', 'is_integer', 'filter_kwargs', 'first_item'
+]
+
+
+def handle_numpy_errors(**kwargs):
+    """
+    Decorator for handling *Numpy* errors.
+
+    Other Parameters
+    ----------------
+    \**kwargs : dict, optional
+        Keywords arguments.
+
+    Returns
+    -------
+    object
+
+    References
+    ----------
+    -   :cite:`Kienzle2011a`
+
+    Examples
+    --------
+    >>> import numpy
+    >>> @handle_numpy_errors(all='ignore')
+    ... def f():
+    ...     1 / numpy.zeros(3)
+    >>> f()
+    """
+
+    context = np.errstate(**kwargs)
+
+    def wrapper(function):
+        """
+        Wrapper for given function.
+        """
+
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            """
+            Wrapped function.
+            """
+
+            with context:
+                return function(*args, **kwargs)
+
+        return wrapped
+
+    return wrapper
+
+
+ignore_numpy_errors = handle_numpy_errors(all='ignore')
+raise_numpy_errors = handle_numpy_errors(all='raise')
+print_numpy_errors = handle_numpy_errors(all='print')
+warn_numpy_errors = handle_numpy_errors(all='warn')
+
+
+def ignore_python_warnings(function):
+    """
+    Decorator for ignoring *Python* warnings.
+
+    Parameters
+    ----------
+    function : object
+        Function to decorate.
+
+    Returns
+    -------
+    object
+
+    Examples
+    --------
+    >>> @ignore_python_warnings
+    ... def f():
+    ...     warnings.warn('This is an ignored warning!')
+    >>> f()
+    """
+
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        """
+        Wrapped function.
+        """
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+
+            return function(*args, **kwargs)
+
+    return wrapped
+
+
+def batch(iterable, k=3):
+    """
+    Returns a batch generator from given iterable.
+
+    Parameters
+    ----------
+    iterable : iterable
+        Iterable to create batches from.
+    k : integer
+        Batches size.
+
+    Returns
+    -------
+    bool
+        Is *string_like* variable.
+
+    Examples
+    --------
+    >>> batch(tuple(range(10)))  # doctest: +ELLIPSIS
+    <generator object batch at 0x...>
+    """
+
+    for i in range(0, len(iterable), k):
+        yield iterable[i:i + k]
+
+
+def is_openimageio_installed(raise_exception=False):
+    """
+    Returns if *OpenImageIO* is installed and available.
+
+    Parameters
+    ----------
+    raise_exception : bool
+        Raise exception if *OpenImageIO* is unavailable.
+
+    Returns
+    -------
+    bool
+        Is *OpenImageIO* installed.
+
+    Raises
+    ------
+    ImportError
+        If *OpenImageIO* is not installed.
+    """
+
+    try:
+        import OpenImageIO  # noqa
+
+        return True
+    except ImportError as error:
+        if raise_exception:
+            raise ImportError(('"OpenImageIO" related Api features '
+                               'are not available: "{0}".').format(error))
+        return False
+
+
+def is_pandas_installed(raise_exception=False):
+    """
+    Returns if *Pandas* is installed and available.
+
+    Parameters
+    ----------
+    raise_exception : bool
+        Raise exception if *Pandas* is unavailable.
+
+    Returns
+    -------
+    bool
+        Is *Pandas* installed.
+
+    Raises
+    ------
+    ImportError
+        If *Pandas* is not installed.
+    """
+
+    try:
+        import pandas  # noqa
+
+        return True
+    except ImportError as error:
+        if raise_exception:
+            raise ImportError(('"Pandas" related Api features '
+                               'are not available: "{0}".').format(error))
+        return False
+
+
+def is_iterable(a):
+    """
+    Returns if given :math:`a` variable is iterable.
+
+    Parameters
+    ----------
+    a : object
+        Variable to check the iterability.
+
+    Returns
+    -------
+    bool
+        :math:`a` variable iterability.
+
+    Examples
+    --------
+    >>> is_iterable([1, 2, 3])
+    True
+    >>> is_iterable(1)
+    False
+    """
+
+    return is_string(a) or (True if getattr(a, '__iter__', False) else False)
+
+
+def is_string(a):
+    """
+    Returns if given :math:`a` variable is a *string* like variable.
+
+    Parameters
+    ----------
+    a : object
+        Data to test.
+
+    Returns
+    -------
+    bool
+        Is :math:`a` variable a *string* like variable.
+
+    Examples
+    --------
+    >>> is_string("I'm a string!")
+    True
+    >>> is_string(["I'm a string!"])
+    False
+    """
+
+    return True if isinstance(a, string_types) else False
+
+
+def is_numeric(a):
+    """
+    Returns if given :math:`a` variable is a number.
+
+    Parameters
+    ----------
+    a : object
+        Variable to check.
+
+    Returns
+    -------
+    bool
+        Is :math:`a` variable a number.
+
+    Examples
+    --------
+    >>> is_numeric(1)
+    True
+    >>> is_numeric((1,))
+    False
+    """
+
+    return isinstance(a, (int, float, complex, np.integer, np.floating,
+                          np.complex))
+
+
+def is_integer(a):
+    """
+    Returns if given :math:`a` variable is an integer under given threshold.
+
+    Parameters
+    ----------
+    a : object
+        Variable to check.
+
+    Returns
+    -------
+    bool
+        Is :math:`a` variable an integer.
+
+    Notes
+    -----
+    -   The determination threshold is defined by the
+        :attr:`colour.algebra.common.INTEGER_THRESHOLD` attribute.
+
+    Examples
+    --------
+    >>> is_integer(1)
+    True
+    >>> is_integer(1.01)
+    False
+    """
+
+    return abs(a - round(a)) <= INTEGER_THRESHOLD
+
+
+def filter_kwargs(function, **kwargs):
+    """
+    Filters keyword arguments incompatible with the given function signature.
+
+    Parameters
+    ----------
+    function : callable
+        Callable to filter the incompatible keyword arguments.
+
+    Other Parameters
+    ----------------
+    \**kwargs : dict, optional
+        Keywords arguments.
+
+    Returns
+    -------
+    dict
+        Filtered keyword arguments.
+
+    Examples
+    --------
+    >>> def fn_a(a):
+    ...     return a
+    >>> def fn_b(a, b=0):
+    ...     return a, b
+    >>> def fn_c(a, b=0, c=0):
+    ...     return a, b, c
+    >>> fn_a(1, **filter_kwargs(fn_a, b=2, c=3))
+    1
+    >>> fn_b(1, **filter_kwargs(fn_b, b=2, c=3))
+    (1, 2)
+    >>> fn_c(1, **filter_kwargs(fn_c, b=2, c=3))
+    (1, 2, 3)
+    """
+
+    kwargs = deepcopy(kwargs)
+    args, _varargs, _keywords, _defaults = inspect.getargspec(function)
+
+    args = set(kwargs.keys()) - set(args)
+    for key in args:
+        kwargs.pop(key)
+
+    return kwargs
+
+
+def first_item(a):
+    """
+    Return the first item of an iterable.
+
+    Parameters
+    ----------
+    a : object
+        Iterable to get the first item from.
+
+    Returns
+    -------
+    object
+
+    Raises
+    ------
+    StopIteration
+        If the iterable is empty.
+
+    Examples
+    --------
+    >>> a = range(10)
+    >>> first_item(a)
+    0
+    """
+
+    return next(iter(a))
