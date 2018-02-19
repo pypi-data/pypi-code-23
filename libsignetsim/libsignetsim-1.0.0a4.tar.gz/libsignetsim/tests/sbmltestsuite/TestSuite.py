@@ -1,0 +1,187 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# Copyright 2014-2017 Vincent Noel (vincent.noel@butantan.gov.br)
+#
+# This file is part of libSigNetSim.
+#
+# libSigNetSim is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# libSigNetSim is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with libSigNetSim.  If not, see <http://www.gnu.org/licenses/>.
+
+"""
+
+	This file is made for the test cases from the SED-ML files
+	in the SBmL Test Suite
+
+"""
+
+from libsignetsim.tests.sbmltestsuite.TestSuiteCase import TestSuiteCase
+from libsignetsim import Settings
+
+from os.path import join, expanduser, exists
+from os import getcwd, mkdir, system
+
+
+class TestSuite(object):
+	""" Tests SED-ML semantic test cases """
+
+	TODO_CASES = []
+	TODO_VERSIONS = []
+	TODO_TAGS = []
+
+	INCOMPATIBLE_CASES = [1504, 1505, 1506, 1507, 1508, 1511, 1512, 1575, 1589, 1590]
+
+	# Cases incompatible with model reduction
+	# INCOMPATIBLE_CASES += [
+	# 	1500, 1501, 1517, 1634, 1642, 1643, 1645, 1646, 1648, 1649, 1651, 1652,
+	# 	1724, 1725, 1730, 1731, 1733, 1734, 1739, 1740, 1775, 1776
+	# ]
+
+	# Cases incompatible with fast reactions
+	INCOMPATIBLE_CASES += [
+		874, 986, 987, 988, 1396, 1397, 1398, 1399, 1544, 1545, 1546, 1547, 1548, 1549, 1550, 1551,
+		1558, 1559, 1560, 1565, 1567, 1568, 1569, 1570, 1571, 1572
+	]
+
+	# Cases incompatible with the reintroduction of initial assignments into C code
+	INCOMPATIBLE_CASES += [1698, 1699]
+
+	INCOMPATIBLE_TAGS = [
+		'CSymbolDelay',
+	]
+
+	COMPATIBLE_PACKAGES = ['comp']
+
+	def __init__(self, version):
+
+		self.TODO_VERSIONS.append(version)
+		self.testCasesPath = None
+		self.testCasesTags = {}
+		self.testCasesVersions = {}
+
+		self.testExport = True
+		Settings.verbose = 0
+
+	def testSuiteRun(self):
+
+		self.testCasesPath = Settings.sbmlTestCasesPath
+		if not exists(join(Settings.tempDirectory, "test-suite-results")):
+			mkdir(join(Settings.tempDirectory, "test-suite-results"))
+
+
+		self.loadTestCasesInfo()
+		return self.runTestCases()
+
+	def loadTestCasesInfo(self, path=None):
+		""" Loads cases info from the .cases-tags-map """
+
+
+		cases_tags_map_file = join(self.testCasesPath,
+											".cases-tags-map")
+
+		if exists(cases_tags_map_file):
+			cases_tags_map = open(cases_tags_map_file)
+			tags_list = []
+			for i, line in enumerate(cases_tags_map.readlines()):
+
+				if i == 0:
+					# List of tags. Ignoring
+					tags_list = line.strip().split()
+
+				elif line.startswith('+'):
+					# Some kind of comment ?
+					pass
+
+				elif line.strip() == "README.md":
+					pass
+
+				else:
+					case_data = line.strip().split()
+					case_id = int(case_data[0])
+					tags = []
+					versions = []
+					for data in case_data[1:]:
+						if data in tags_list:
+							tags.append(data)
+						else:
+							versions.append(data)
+
+					self.testCasesTags.update({case_id: tags})
+					self.testCasesVersions.update({case_id: versions})
+			cases_tags_map.close()
+
+	def runTestCases(self):
+
+		nb_success = 0
+		nb_cases = 0
+		for case_id, case_tags in self.testCasesTags.items():
+
+			compatible = True
+			if self.TODO_TAGS != []:
+				todo_tag = False
+			else:
+				todo_tag = True
+			for tag in case_tags:
+
+				if tag.strip() in self.TODO_TAGS:
+					todo_tag = True
+
+				if tag.strip() in self.INCOMPATIBLE_TAGS:
+					compatible = False
+
+				elif (':' in tag.strip()
+					  and tag.strip().split(':')[0] not in self.COMPATIBLE_PACKAGES):
+					compatible = False
+
+			if (compatible
+				and case_id not in self.INCOMPATIBLE_CASES
+				and todo_tag
+				and (self.TODO_CASES == [] or case_id in self.TODO_CASES)
+			):
+				(t_success, t_cases) = self.runCase(case_id)
+				nb_success += t_success
+				nb_cases += t_cases
+
+
+		if nb_cases > 0:
+			print "\n> %d success out of %d tests (%.0f%%)" % (nb_success, nb_cases, nb_success*100/nb_cases)
+		return nb_cases == nb_success
+
+	def runCase(self, case):
+
+		nb_cases = 0
+		nb_success = 0
+
+		for versions in self.testCasesVersions[case]:
+			if self.TODO_VERSIONS == [] or versions in self.TODO_VERSIONS:
+
+				print "> Running case %05d (%s)" % (case, str(self.TODO_VERSIONS))
+
+				level_version = versions.split('.')
+				level = int(level_version[0])
+				version = int(level_version[1])
+
+				nb_cases += 1
+
+				# try:
+				if Settings.verbose >= 1 or Settings.verboseTiming >= 1:
+					print ""
+
+				test = TestSuiteCase(case, str(level), str(version), test_export=self.testExport)
+				if test.run():
+					nb_success += 1
+
+				# except Exception as e:
+				# 	print ">> case %d, %dv%d : ERROR (%s)" % (int(case), level, version, e)
+
+		return nb_success, nb_cases
