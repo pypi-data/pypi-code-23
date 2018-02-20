@@ -1,0 +1,62 @@
+# ActivitySim
+# See full license in LICENSE.txt.
+
+import logging
+
+from activitysim.core import simulate
+from activitysim.core import tracing
+from activitysim.core import pipeline
+from activitysim.core import config
+from activitysim.core import inject
+
+logger = logging.getLogger(__name__)
+
+
+@inject.injectable()
+def auto_ownership_spec(configs_dir):
+    return simulate.read_model_spec(configs_dir, 'auto_ownership.csv')
+
+
+@inject.injectable()
+def auto_ownership_settings(configs_dir):
+    return config.read_model_settings(configs_dir, 'auto_ownership.yaml')
+
+
+@inject.step()
+def auto_ownership_simulate(households_merged,
+                            auto_ownership_spec,
+                            auto_ownership_settings,
+                            chunk_size,
+                            trace_hh_id):
+    """
+    Auto ownership is a standard model which predicts how many cars a household
+    with given characteristics owns
+    """
+    trace_label = 'auto_ownership_simulate'
+
+    logger.info("Running auto_ownership_simulate with %d households" % len(households_merged))
+
+    nest_spec = config.get_logit_model_settings(auto_ownership_settings)
+    constants = config.get_model_constants(auto_ownership_settings)
+
+    choices = simulate.simple_simulate(
+        choosers=households_merged.to_frame(),
+        spec=auto_ownership_spec,
+        nest_spec=nest_spec,
+        locals_d=constants,
+        chunk_size=chunk_size,
+        trace_label=trace_label,
+        trace_choice_name='auto_ownership')
+
+    tracing.print_summary('auto_ownership', choices, value_counts=True)
+
+    inject.add_column('households', 'auto_ownership', choices)
+
+    pipeline.add_dependent_columns('households', 'households_autoown')
+
+    if trace_hh_id:
+        trace_columns = ['auto_ownership'] + inject.get_table('households_autoown').columns
+        tracing.trace_df(inject.get_table('households').to_frame(),
+                         label='auto_ownership',
+                         columns=trace_columns,
+                         warn_if_empty=True)
