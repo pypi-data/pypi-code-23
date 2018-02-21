@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+# Copyright (C) 2017  Alex Schroeder <alex@gnu.org>
+
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <http://www.gnu.org/licenses/>.
+
+import sys
+import os.path
+import textwrap
+from datetime import timedelta, datetime
+from . import core
+
+def boosts(statuses):
+    """
+    Count boosts in statuses
+    """
+    i = 0
+    for item in statuses:
+        if item["reblog"] is not None:
+            i += 1
+    return i
+
+def media(statuses):
+    """
+    Count media attachments in statuses
+    """
+    i = 0
+    for item in statuses:
+        i += len(item["media_attachments"])
+    return i
+
+
+def tags(statuses, include_boosts):
+    """
+    Count all the hashtags in statuses
+    """
+    count = {}
+    for item in statuses:
+        if include_boosts and item["reblog"] is not None:
+            item = item["reblog"]
+        for name in [tag["name"] for tag in item["tags"]]:
+            if name in count:
+                count[name] += 1
+            else:
+                count[name] = 1
+    return count
+
+def print_tags(statuses, max, include_boosts):
+    """
+    Print hashtags used in statuses
+    """
+    if max == -1:
+        print("All the hashtags:")
+    else:
+        print("Top " + str(max) + " hashtags:")
+    count = tags(statuses, include_boosts)
+    most = sorted(count.keys(), key = lambda tag: -count[tag])
+    print(textwrap.fill(" ".join(
+        ["#"+tag+"("+str(count[tag])+")" for tag in most[0:max]])))
+
+def keep(statuses, weeks):
+    """
+    Return all statuses newer than some weeks
+    """
+
+    delta = timedelta(weeks = weeks)
+    cutoff = datetime.today() - delta
+
+    def matches(status):
+        created = datetime.strptime(status["created_at"][0:10], "%Y-%m-%d")
+        return created >= cutoff
+
+    return list(filter(matches, statuses))
+    
+def report(args):
+    """
+    Report on your toots and favourites
+    """
+
+    (username, domain) = args.user.split('@')
+
+    status_file = domain + '.user.' + username + '.json'
+    data = core.load(status_file, required = True, quiet = True)
+
+    if args.all:
+        print("Considering the entire archive")
+        statuses = data["statuses"]
+        favourites = data["favourites"]
+    else:
+        print("Considering the last "
+              + str(args.weeks)
+              + " weeks")
+        statuses = keep(data["statuses"], args.weeks)
+        favourites = keep(data["favourites"], args.weeks)
+    
+    if "statuses" in data:
+        print("Statuses:".ljust(20), str(len(statuses)).rjust(6))
+        print("Boosts:".ljust(20), str(boosts(statuses)).rjust(6))
+        print("Media:".ljust(20), str(media(statuses)).rjust(6))
+
+        print()
+        print_tags(statuses, args.top, args.include_boosts)
+
+    if "statuses" in data and "favourites" in data:
+        print()
+        
+    if "favourites" in data:
+        print("Favourites:".ljust(20), str(len(favourites)).rjust(6))
+        print("Boosts:".ljust(20), str(boosts(favourites)).rjust(6))
+        print("Media:".ljust(20), str(media(favourites)).rjust(6))
+
+        print()
+        print_tags(favourites, args.top, args.include_boosts)
