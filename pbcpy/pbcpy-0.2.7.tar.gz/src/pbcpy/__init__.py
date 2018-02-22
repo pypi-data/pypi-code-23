@@ -1,0 +1,5 @@
+__author__ = "Alessandro Genova"
+__contact__ = "ales.genova@gmail.com"
+__license__ = "MIT"
+__version__ = "0.2.7"
+__date__ = "2018-02-22"
