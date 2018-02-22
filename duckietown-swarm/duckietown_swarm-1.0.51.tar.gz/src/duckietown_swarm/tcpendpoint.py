@@ -1,0 +1,95 @@
+from abc import ABCMeta, abstractmethod
+import asyncore
+from duckietown_swarm.dcache import Envelope, CouldNotReadEnvelope
+from duckietown_swarm.utils import MakeLines
+import socket
+
+
+def tcplisten(mi, port):
+    server = EchoServer(mi, '0.0.0.0', port)
+    while 1:
+        asyncore.loop(count=1, timeout=1.0)
+        for e in mi.get_many_for_me(1):
+            for addr, socket in server.addr2socket.items():
+                if e.maddr_to.startswith(addr):
+                    rest = e.maddr_to[len(addr):]
+                    e.maddr_to = rest
+                    s = e.to_json() + '\n'
+                    try:
+                        socket.send(s)
+                    except Exception as e:
+                        print(str(e))
+                        pass
+                    break
+            else:
+                msg = 'Could not route connection %s' % e.maddr_to
+                print(msg)
+
+
+class Processor():
+    __metaclass__ = ABCMeta
+
+    def set_handler(self, handler):
+        self.handler = handler
+
+    @abstractmethod
+    def receive(self, line):
+        pass
+
+    def send(self, line):
+        self.handler.send(line)
+
+
+class EchoHandler(asyncore.dispatcher_with_send):
+
+    def init(self, processor):
+        self.processor = processor
+        self.ml = MakeLines()
+
+    def handle_read(self):
+        self.ml.push(self.recv(8192))
+        for line in self.ml.get_lines():
+            self.processor.receive(line)
+
+
+class EchoServer(asyncore.dispatcher):
+
+    def __init__(self, mi, host, port):
+        self.mi = mi
+        asyncore.dispatcher.__init__(self)
+        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.set_reuse_addr()
+        self.bind((host, port))
+        self.listen(5)
+        self.addr2socket = {}
+
+    def handle_accept(self):
+        pair = self.accept()
+
+        if pair is not None:
+            sock, addr = pair
+            maddr = '/ip4/%s/tcp/%s' % addr
+            self.addr2socket[maddr] = sock
+            print('Incoming connection from %s' % maddr)
+            handler = EchoHandler(sock)
+            processor = MyProcessor(self.mi, addr)
+            processor.set_handler(handler)
+            handler.init(processor)
+
+
+class MyProcessor(Processor):
+
+    def __init__(self, mi, addr):
+        self.mi = mi
+        self.host, self.port = addr
+
+    def receive(self, line):
+        try:
+            env = Envelope.from_json(line)
+        except CouldNotReadEnvelope as e:
+            self.send(str(e) + '\n')
+        else:
+            m = '/ip4/%s/tcp/%s' % (self.host, self.port)
+            env.maddr_from = m + env.maddr_from
+            self.mi.dispatch(env)
+
