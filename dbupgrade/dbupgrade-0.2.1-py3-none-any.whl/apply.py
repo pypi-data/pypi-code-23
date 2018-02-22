@@ -1,0 +1,19 @@
+import logging
+from typing import Sequence
+
+from dbupgrade.db import execute_stream
+from dbupgrade.files import FileInfo
+
+
+def apply_files(db_url: str, files: Sequence[FileInfo]) -> None:
+    for file_info in files:
+        apply_file(db_url, file_info)
+
+
+def apply_file(db_url: str, file_info: FileInfo) -> None:
+    logging.info(
+        "applying #{0.version} (API level {0.api_level})".format(file_info))
+    with open(file_info.filename, "r") as stream:
+        execute_stream(db_url, stream, file_info.schema,
+                       file_info.version, file_info.api_level,
+                       transaction=file_info.transaction)
