@@ -1,0 +1,278 @@
+# Copyright 2015 Objectif Libre
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+import logging
+
+from django.utils.translation import ugettext_lazy as _
+from horizon import forms
+
+from cloudkittyclient.apiclient import exceptions
+from cloudkittydashboard.api import cloudkitty as api
+
+from openstack_dashboard import api as api_keystone
+
+LOG = logging.getLogger(__name__)
+
+
+class CreateServiceForm(forms.SelfHandlingForm):
+    services_choices = [("service", _("Service")),
+                        ("custom_service", _("Custom service"))]
+    service_type = forms.ChoiceField(
+        label=_("Service type"),
+        choices=services_choices,
+        widget=forms.Select(attrs={
+            'class': 'switchable',
+            'data-slug': 'servicetype'}),
+        required=True)
+    service = forms.DynamicChoiceField(
+        label=_("Service"),
+        help_text=_("Services are provided by main collector."),
+        widget=forms.Select(attrs={
+            'class': 'switched',
+            'data-switch-on': 'servicetype',
+            'data-servicetype-service': _('Service')}),
+        required=False)
+    custom_service = forms.CharField(
+        label=_("Custom service"),
+        help_text=_("Custom services can be defined for any "
+                    "additional collector."),
+        widget=forms.widgets.TextInput(attrs={
+            'class': 'switched',
+            'data-switch-on': 'servicetype',
+            'data-servicetype-custom_service': _('Custom service')}),
+        required=False)
+
+    def handle(self, request, data):
+        if data['service_type'] == 'service':
+            service = data['service']
+        else:
+            service = data['custom_service']
+        services_mgr = api.cloudkittyclient(request).hashmap.services
+        LOG.info('Creating service with name %s' % (service))
+        return services_mgr.create(name=service)
+
+    def __init__(self, request, *args, **kwargs):
+        super(CreateServiceForm, self).__init__(request, *args, **kwargs)
+        services = api.cloudkittyclient(request).service_info.list()
+        services = api.identify(services)
+        choices = sorted([(s.service_id, s.service_id) for s in services])
+        self.fields['service'].choices = choices
+
+
+class CreateFieldForm(forms.SelfHandlingForm):
+    service_id = forms.CharField(label=_("Service ID"),
+                                 widget=forms.TextInput(
+                                     attrs={'readonly': 'readonly'}))
+    service_name = forms.CharField(label=_("Service Name"),
+                                   widget=forms.TextInput(
+                                       attrs={'readonly': 'readonly'}))
+
+    def handle(self, request, data):
+        service_id = data['service_id']
+        field = data['field']
+        LOG.info('Creating field with name %s' % (field))
+        fields_mgr = api.cloudkittyclient(request).hashmap.fields
+        return fields_mgr.create(name=field, service_id=service_id)
+
+    def __init__(self, request, *args, **kwargs):
+        super(CreateFieldForm, self).__init__(request, *args, **kwargs)
+        service_id = kwargs['initial']['service_id']
+        manager = api.cloudkittyclient(request)
+        service = manager.hashmap.services.get(service_id=service_id)
+        self.fields['service_name'].initial = service.name
+
+        try:
+            fields = manager.service_info.get(service_id=service.name)
+        except exceptions.NotFound:
+            fields = None
+
+        if fields:
+            fields = api.identify(fields)
+            choices = sorted([(field, field) for field in fields.metadata])
+            self.fields['field'] = forms.DynamicChoiceField(
+                label=_("Field"),
+                required=True)
+            self.fields['field'].choices = choices
+        else:
+            self.fields['field'] = forms.CharField(
+                label=_("Field"),
+                required=True)
+
+
+class CreateGroupForm(forms.SelfHandlingForm):
+    name = forms.CharField(label=_("Name"))
+
+    def handle(self, request, data):
+        name = data['name']
+        LOG.info('Creating group with name %s' % (name))
+        return api.cloudkittyclient(request).hashmap.groups.create(name=name)
+
+
+class BaseForm(forms.SelfHandlingForm):
+    type = forms.ChoiceField(label=_("Type"),
+                             choices=(("flat", _("Flat")),
+                                      ("rate", _("Rate"))))
+    cost = forms.DecimalField(label=_("Cost"))
+    url = "horizon:admin:hashmap:group_create"
+    group_id = forms.DynamicChoiceField(label=_("Group"),
+                                        required=False,
+                                        add_item_link=url)
+    tenant_id = forms.ChoiceField(label=_("Project"),
+                                  required=False)
+    fields_order = ['type', 'cost', 'group_id']
+
+    def __init__(self, request, *args, **kwargs):
+        super(BaseForm, self).__init__(request, *args, **kwargs)
+        self.order_fields(self.fields_order)
+        groups = api.cloudkittyclient(request).hashmap.groups.list()
+        groups = api.identify(groups)
+        choices = [(group.id, group.name) for group in groups]
+        choices.insert(0, ('', ' '))
+        self.fields['group_id'].choices = choices
+
+        tenants, __ = api_keystone.keystone.tenant_list(request)
+        choices_tenants = [(tenant.id, tenant.name) for tenant in tenants]
+        choices_tenants.insert(0, (None, ' '))
+        self.fields['tenant_id'].choices = choices_tenants
+
+
+class BaseThresholdForm(BaseForm):
+    level = forms.DecimalField(label=_("Level"))
+    fields_order = ['level', 'type', 'cost', 'group_id', 'tenant_id']
+
+    def handle(self, request, data):
+        thresholds_mgr = api.cloudkittyclient(request).hashmap.thresholds
+        threshold = {}
+        for k, v in data.items():
+            if v:
+                threshold[k] = v
+        return thresholds_mgr.create(**threshold)
+
+
+class CreateServiceThresholdForm(BaseThresholdForm):
+    service_id = forms.CharField(label=_("Service ID"),
+                                 widget=forms.TextInput(
+                                     attrs={'readonly': 'readonly'}))
+    fields_order = ['service_id', 'level', 'type', 'cost', 'group_id',
+                    'tenant_id']
+
+
+class CreateFieldThresholdForm(BaseThresholdForm):
+    field_id = forms.CharField(label=_("Field"),
+                               widget=forms.TextInput(
+                                   attrs={'readonly': 'readonly'}))
+    fields_order = ['field_id', 'level', 'type', 'cost', 'group_id',
+                    'tenant_id']
+
+
+class BaseMappingForm(BaseForm):
+
+    def handle(self, request, data):
+        mapping_mgr = api.cloudkittyclient(request).hashmap.mappings
+        mapping = {}
+        for k, v in data.items():
+            if v:
+                mapping[k] = v
+        return mapping_mgr.create(**mapping)
+
+
+class CreateFieldMappingForm(BaseMappingForm):
+    value = forms.CharField(label=_("Value"))
+    field_id = forms.CharField(label=_("Field ID"),
+                               widget=forms.TextInput(
+                                   attrs={'readonly': 'readonly'}),
+                               required=False)
+    fields_order = ['field_id', 'value', 'type', 'cost', 'group_id',
+                    'tenant_id']
+
+
+class CreateServiceMappingForm(BaseMappingForm):
+    service_id = forms.CharField(label=_("Service ID"),
+                                 widget=forms.TextInput(
+                                     attrs={'readonly': 'readonly'}),
+                                 required=False)
+    fields_order = ['service_id', 'type', 'cost', 'group_id',
+                    'tenant_id']
+
+
+class BaseEditMappingForm(BaseMappingForm):
+    mapping_id = forms.CharField(label=_("Mapping ID"),
+                                 widget=forms.TextInput(
+                                     attrs={'readonly': 'readonly'}))
+    tenant_id = forms.ChoiceField(label=_("Project"),
+                                  required=False)
+
+    def handle(self, request, data):
+        mapping_mgr = api.cloudkittyclient(request).hashmap.mappings
+        mapping = {}
+        for k, v in data.items():
+            if v:
+                mapping[k] = v
+        mapping['mapping_id'] = self.initial['mapping_id']
+        return mapping_mgr.update(**mapping)
+
+
+class EditServiceMappingForm(BaseEditMappingForm, CreateServiceMappingForm):
+    fields_order = ['service_id', 'mapping_id', 'type', 'cost', 'group_id',
+                    'tenant_id']
+
+
+class EditFieldMappingForm(BaseEditMappingForm, CreateFieldMappingForm):
+    fields_order = [
+        'field_id',
+        'mapping_id',
+        'value',
+        'type',
+        'cost',
+        'group_id',
+        'tenant_id']
+
+
+class BaseEditThresholdForm(BaseThresholdForm):
+    threshold_id = forms.CharField(label=_("Threshold ID"),
+                                   widget=forms.TextInput(
+                                       attrs={'readonly': 'readonly'}))
+
+    def handle(self, request, data):
+        threshold_mgr = api.cloudkittyclient(request).hashmap.thresholds
+        threshold = {}
+        for k, v in data.items():
+            if v:
+                threshold[k] = v
+        threshold['threshold_id'] = self.initial['threshold_id']
+        return threshold_mgr.update(**threshold)
+
+
+class EditServiceThresholdForm(BaseEditThresholdForm,
+                               CreateServiceThresholdForm):
+    fields_order = [
+        'service_id',
+        'threshold_id',
+        'level',
+        'type',
+        'cost',
+        'group_id',
+        'tenant_id']
+
+
+class EditFieldThresholdForm(BaseEditThresholdForm,
+                             CreateFieldThresholdForm):
+    fields_order = [
+        'field_id',
+        'threshold_id',
+        'level',
+        'type',
+        'cost',
+        'group_id',
+        'tenant_id']
