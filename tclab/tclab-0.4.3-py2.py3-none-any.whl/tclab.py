@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from __future__ import print_function
+import time
+import os
+import random
+import serial
+from serial.tools import list_ports
+from .labtime import labtime
+
+
+sep = ' '   # command/value separator in TCLab firmware
+
+arduinos = [('USB VID:PID=16D0:0613', 'Arduino Uno'),
+            ('USB VID:PID=1A86:7523', 'NHduino'),
+            ('USB VID:PID=2341:8036', 'Arduino Leonardo'),
+            ('USB VID:PID=2A03', 'Arduino.org device'),
+            ('USB VID:PID', 'unknown device'),
+            ]
+
+
+def clip(val, lower=0, upper=100):
+    """Limit value to be between lower and upper limits"""
+    return max(lower, min(val, upper))
+
+
+def command(name, argument, lower=0, upper=100):
+    """Construct command to TCLab-sketch."""
+    return name + sep + str(clip(argument, lower, upper))
+
+
+class TCLab(object):
+    def __init__(self, port='', debug=False):
+        self.debug = debug
+        if os.name == 'nt':
+            port_list = list_ports.comports()
+        else:
+            port_list = list_ports.grep(port)
+        for comport in port_list:
+            for key, val in arduinos:
+                if comport[2].startswith(key):
+                    self.arduino = val
+                    port = comport[0]
+                    break
+            else:
+                continue  # key not found in arduinos
+            break  # key was found in arduinos
+        else:
+            print('--- Serial Ports ---')
+            for comport in list(list_ports.comports()):
+                print(" ".join(comport))
+            raise RuntimeError('No Arduino device found.')
+        try:
+            try:
+                baud = 115200
+                self.sp = serial.Serial(port=port, baudrate=baud, timeout=2)
+                time.sleep(2)
+                self.Q1(0)
+            except:
+                self.sp.close()
+                baud = 9600
+                self.sp = serial.Serial(port=port, baudrate=baud, timeout=2)
+                time.sleep(2)
+                self.Q1(0)  # fails if not connected
+                print('New Arduino TCLab firmware available at:')
+                print(' https://github.com/jckantor/TCLab-sketch')
+        except:
+            raise RuntimeError('Failed to Connect.')
+        self.sp.readline().decode('UTF-8')
+        self.sp.write(('VER' + '\r\n').encode())
+        self.version = self.sp.readline()
+        self.version = self.version.decode('UTF-8').replace('\r\n', '')
+        if self.sp.isOpen():
+            print(self.arduino, 'connected on port', port, 'at', baud, 'baud.')
+            print(self.version + '.')
+        labtime.set_rate(1)
+        self._P1 = 200.0
+        self._P2 = 100.0
+        self.Q1(0)
+        self.sources = [('T1', self.scan),
+                        ('T2', None),
+                        ('Q1', None),
+                        ('Q2', None),
+                        ]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return
+
+    def close(self):
+        """Shut down TCLab device and close serial connection."""
+        self.Q1(0)
+        self.Q2(0)
+        self.send_and_receive('X')
+        self.sp.close()
+        print('TCLab disconnected successfully.')
+        return
+
+    def send(self, msg):
+        """Send a string message to the TCLab firmware."""
+        self.sp.write((msg + '\r\n').encode())
+        if self.debug:
+            print('Sent: "' + msg + '"')
+        self.sp.flush()
+
+    def receive(self):
+        """Return a string message received from the TCLab firmware."""
+        msg = self.sp.readline().decode('UTF-8').replace('\r\n', '')
+        if self.debug:
+            print('Return: "' + msg + '"')
+        return msg
+
+    def send_and_receive(self, msg, convert=str):
+        """Send a string message and return the response"""
+        self.send(msg)
+        return convert(self.receive())
+
+    def LED(self, val=100):
+        """Flash TCLab LED at a specified brightness for 10 seconds."""
+        return self.send_and_receive(command('LED', val), float)
+
+    @property
+    def T1(self):
+        """Return a float denoting TCLab temperature T1 in degrees C."""
+        return self.send_and_receive('T1', float)
+
+    @property
+    def T2(self):
+        """Return a float denoting TCLab temperature T2 in degrees C."""
+        return self.send_and_receive('T2', float)
+
+    @property
+    def P1(self):
+        """Return a float denoting maximum power of heater 1 in pwm."""
+        return self._P1
+
+    @P1.setter
+    def P1(self, val):
+        """Set maximum power of heater 1 in pwm, range 0 to 255."""
+        self._P1 = self.send_and_receive(command('P1', val, 0, 255), float)
+
+    @property
+    def P2(self):
+        """Return a float denoting maximum power of heater 2 in pwm."""
+        return self._P2
+
+    @P2.setter
+    def P2(self, val):
+        """Set maximum power of heater 2 in pwm, range 0 to 255."""
+        self._P2 = self.send_and_receive(command('P2', val, 0, 255), float)
+
+    def Q1(self, val=None):
+        """Get or set TCLab heater power Q1
+
+        val: Value of heater power, range is limited to 0-100
+
+        return clipped value."""
+        if val is None:
+            msg = 'R1'
+        else:
+            msg = 'Q1' + sep + str(clip(val))
+        return self.send_and_receive(msg, float)
+
+    def Q2(self, val=None):
+        """Get or set TCLab heater power Q2
+
+        val: Value of heater power, range is limited to 0-100
+
+        return clipped value."""
+        if val is None:
+            msg = 'R2'
+        else:
+            msg = 'Q2' + sep + str(clip(val))
+        return self.send_and_receive(msg, float)
+
+    def scan(self):
+        self.send('SCAN')
+        T1 = float(self.receive())
+        T2 = float(self.receive())
+        Q1 = float(self.receive())
+        Q2 = float(self.receive())
+        return T1, T2, Q1, Q2
+
+    # Define properties for Q1 and Q2
+    U1 = property(fget=Q1, fset=Q1, doc="Heater 1 value")
+    U2 = property(fget=Q2, fset=Q2, doc="Heater 2 value")
+
+
+class TCLabModel(object):
+    def __init__(self, port='', debug=False):
+        self.debug = debug
+        print('Simulated TCLab')
+        self.Ta = 21                  # ambient temperature
+        self.tstart = labtime.time()  # start time
+        self.tlast = self.tstart      # last update time
+        self._P1 = 200.0              # max power heater 1
+        self._P2 = 100.0              # max power heater 2
+        self._Q1 = 0                  # initial heater 1
+        self._Q2 = 0                  # initial heater 2
+        self._T1 = self.Ta            # temperature thermister 1
+        self._T2 = self.Ta            # temperature thermister 2
+        self._H1 = self.Ta            # temperature heater 1
+        self._H2 = self.Ta            # temperature heater 2
+        self.maxstep = 0.2            # maximum time step for integration
+        self.sources = [('T1', self.scan),
+                        ('T2', None),
+                        ('Q1', None),
+                        ('Q2', None),
+                        ]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return
+
+    def close(self):
+        """Simulate shutting down TCLab device."""
+        self.Q1(0)
+        self.Q2(0)
+        print('TCLab Model disconnected successfully.')
+        return
+
+    def LED(self, val=100):
+        """Simulate flashing TCLab LED
+
+           val : specified brightness (default 100). """
+        self.update()
+        return clip(val)
+
+    @property
+    def T1(self):
+        """Return a float denoting TCLab temperature T1 in degrees C."""
+        self.update()
+        return self.measurement(self._T1)
+
+    @property
+    def T2(self):
+        """Return a float denoting TCLab temperature T2 in degrees C."""
+        self.update()
+        return self.measurement(self._T2)
+
+    @property
+    def P1(self):
+        """Return a float denoting maximum power of heater 1 in pwm."""
+        self.update()
+        return self._P1
+
+    @P1.setter
+    def P1(self, val):
+        """Set maximum power of heater 1 in pwm, range 0 to 255."""
+        self.update()
+        self._P1 = clip(val, 0, 255)
+
+    @property
+    def P2(self):
+        """Return a float denoting maximum power of heater 2 in pwm."""
+        self.update()
+        return self._P2
+
+    @P2.setter
+    def P2(self, val):
+        """Set maximum power of heater 2 in pwm, range 0 to 255."""
+        self.update()
+        self._P2 = clip(val, 0, 255)
+
+    def Q1(self, val=None):
+        """Get or set TCLabModel heater power Q1
+
+        val: Value of heater power, range is limited to 0-100
+
+        return clipped value."""
+        self.update()
+        if val is not None:
+            self._Q1 = clip(val)
+        return self._Q1
+
+    def Q2(self, val=None):
+        """Get or set TCLabModel heater power Q2
+
+        val: Value of heater power, range is limited to 0-100
+
+        return clipped value."""
+        self.update()
+        if val is not None:
+            self._Q2 = clip(val)
+        return self._Q2
+
+    def scan(self):
+        self.update()
+        return (self.measurement(self._T1),
+                self.measurement(self._T2),
+                self._Q1,
+                self._Q2)
+
+    # Define properties for Q1 and Q2
+    U1 = property(fget=Q1, fset=Q1, doc="Heater 1 value")
+    U2 = property(fget=Q2, fset=Q2, doc="Heater 2 value")
+
+    def quantize(self, T):
+        """Quantize model temperatures to mimic Arduino A/D conversion."""
+        return max(-50, min(132.2, T - T % 0.3223))
+
+    def measurement(self, T):
+        return self.quantize(T + random.normalvariate(0, 0.043))
+
+    def update(self):
+        self.tnow = labtime.time() - self.tstart
+        fullsteps, remainder = divmod(self.tnow - self.tlast, self.maxstep)
+
+        for dt in [self.maxstep]*int(fullsteps) + [remainder]:
+            DeltaTaH1 = self.Ta - self._H1
+            DeltaTaH2 = self.Ta - self._H2
+            DeltaT12 = self._H1 - self._H2
+            dH1 = self._P1 * self._Q1 / 5720 + DeltaTaH1 / 20 - DeltaT12 / 100
+            dH2 = self._P2 * self._Q2 / 5720 + DeltaTaH2 / 20 + DeltaT12 / 100
+            dT1 = (self._H1 - self._T1)/140
+            dT2 = (self._H2 - self._T2)/140
+
+            self._H1 += dt * dH1
+            self._H2 += dt * dH2
+            self._T1 += dt * dT1
+            self._T2 += dt * dT2
+
+        self.tlast = self.tnow
