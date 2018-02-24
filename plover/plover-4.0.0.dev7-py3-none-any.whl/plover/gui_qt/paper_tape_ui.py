@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+
+# Form implementation generated from reading ui file 'plover/gui_qt/paper_tape.ui'
+#
+# Created by: PyQt5 UI code generator 5.9.2
+#
+# WARNING! All changes made in this file will be lost!
+
+from PyQt5 import QtCore, QtGui, QtWidgets
+
+class Ui_PaperTape(object):
+    def setupUi(self, PaperTape):
+        PaperTape.setObjectName("PaperTape")
+        PaperTape.resize(247, 430)
+        font = QtGui.QFont()
+        font.setFamily("Monospace")
+        PaperTape.setFont(font)
+        PaperTape.setSizeGripEnabled(True)
+        self.verticalLayout = QtWidgets.QVBoxLayout(PaperTape)
+        self.verticalLayout.setObjectName("verticalLayout")
+        self.formLayout = QtWidgets.QFormLayout()
+        self.formLayout.setObjectName("formLayout")
+        self.label = QtWidgets.QLabel(PaperTape)
+        self.label.setObjectName("label")
+        self.formLayout.setWidget(0, QtWidgets.QFormLayout.LabelRole, self.label)
+        self.styles = QtWidgets.QComboBox(PaperTape)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        sizePolicy.setHorizontalStretch(0)
+        sizePolicy.setVerticalStretch(0)
+        sizePolicy.setHeightForWidth(self.styles.sizePolicy().hasHeightForWidth())
+        self.styles.setSizePolicy(sizePolicy)
+        self.styles.setObjectName("styles")
+        self.formLayout.setWidget(0, QtWidgets.QFormLayout.FieldRole, self.styles)
+        self.verticalLayout.addLayout(self.formLayout)
+        self.header = QtWidgets.QLabel(PaperTape)
+        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        sizePolicy.setHorizontalStretch(0)
+        sizePolicy.setVerticalStretch(0)
+        sizePolicy.setHeightForWidth(self.header.sizePolicy().hasHeightForWidth())
+        self.header.setSizePolicy(sizePolicy)
+        self.header.setObjectName("header")
+        self.verticalLayout.addWidget(self.header)
+        self.tape = QtWidgets.QPlainTextEdit(PaperTape)
+        self.tape.setFrameShape(QtWidgets.QFrame.Panel)
+        self.tape.setUndoRedoEnabled(False)
+        self.tape.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        self.tape.setReadOnly(True)
+        self.tape.setObjectName("tape")
+        self.verticalLayout.addWidget(self.tape)
+        self.action_Clear = QtWidgets.QAction(PaperTape)
+        icon = QtGui.QIcon()
+        icon.addFile(":/trash.svg", QtCore.QSize(), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        self.action_Clear.setIcon(icon)
+        self.action_Clear.setObjectName("action_Clear")
+        self.action_Save = QtWidgets.QAction(PaperTape)
+        icon1 = QtGui.QIcon()
+        icon1.addFile(":/save.svg", QtCore.QSize(), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        self.action_Save.setIcon(icon1)
+        self.action_Save.setObjectName("action_Save")
+        self.action_ToggleOnTop = QtWidgets.QAction(PaperTape)
+        self.action_ToggleOnTop.setCheckable(True)
+        icon2 = QtGui.QIcon()
+        icon2.addFile(":/pin.svg", QtCore.QSize(), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        self.action_ToggleOnTop.setIcon(icon2)
+        self.action_ToggleOnTop.setObjectName("action_ToggleOnTop")
+        self.action_SelectFont = QtWidgets.QAction(PaperTape)
+        icon3 = QtGui.QIcon()
+        icon3.addFile(":/font_selector.svg", QtCore.QSize(), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+        self.action_SelectFont.setIcon(icon3)
+        self.action_SelectFont.setObjectName("action_SelectFont")
+
+        self.retranslateUi(PaperTape)
+        self.styles.activated['QString'].connect(PaperTape.on_style_changed)
+        self.action_Clear.triggered.connect(PaperTape.on_clear)
+        self.action_Save.triggered.connect(PaperTape.on_save)
+        self.action_ToggleOnTop.triggered['bool'].connect(PaperTape.on_toggle_ontop)
+        self.action_SelectFont.triggered.connect(PaperTape.on_select_font)
+        QtCore.QMetaObject.connectSlotsByName(PaperTape)
+
+    def retranslateUi(self, PaperTape):
+
+        PaperTape.setWindowTitle(_("Plover: Paper Tape"))
+        self.label.setText(_("Mode"))
+        self.header.setText(_("#STKPWHRAO*EUFRPBLGTSDZ"))
+        self.action_Clear.setText(_("&Clear"))
+        self.action_Clear.setToolTip(_("Clear paper tape"))
+        self.action_Clear.setShortcut(_("Ctrl+L"))
+        self.action_Save.setText(_("&Save"))
+        self.action_Save.setToolTip(_("Save paper tape to file"))
+        self.action_Save.setShortcut(_("Ctrl+S"))
+        self.action_ToggleOnTop.setText(_("&Toggle \"always on top\""))
+        self.action_ToggleOnTop.setToolTip(_("Toggle \"always on top\""))
+        self.action_ToggleOnTop.setShortcut(_("Ctrl+T"))
+        self.action_SelectFont.setText(_("Select &font"))
+        self.action_SelectFont.setToolTip(_("Open font selection dialog"))
+
+from . import resources_rc
