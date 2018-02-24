@@ -1,0 +1,1 @@
+from ulam.spiral import Spiral
