@@ -1,0 +1,87 @@
+from os.path import abspath, exists, join, dirname
+
+from appdirs import user_config_dir
+from sqlalchemy.exc import SQLAlchemyError
+
+from nanohttp import Application as NanohttpApplication, Controller, HttpStatus, HttpInternalServerError
+from .cli.main import MainLauncher
+from ..authentication import Authenticator
+from ..configuration import configure
+from ..exceptions import SqlError
+from ..logging_ import get_logger
+from ..orm import init_model, create_engine, DBSession
+
+
+class Application(NanohttpApplication):
+    builtin_configuration = None
+    __logger__ = get_logger()
+    __authenticator__ = None
+    engine = None
+
+    def __init__(self, name: str, root: Controller, root_path='.', version='0.1.0-dev.0', process_name=None,
+                 authenticator=None):
+        super(Application, self).__init__(root=root)
+        self.process_name = process_name or name
+        self.version = version
+        self.root_path = abspath(root_path)
+        self.name = name
+        self.cli_main = MainLauncher(self)
+        if authenticator:
+            self.__authenticator__ = authenticator
+        elif self.__authenticator__ is None:
+            self.__authenticator__ = Authenticator()
+
+    def _handle_exception(self, ex):
+        if isinstance(ex, SQLAlchemyError):
+            ex = SqlError(ex)
+            self.__logger__.exception(str(ex))
+        if not isinstance(ex, HttpStatus):
+            ex = HttpInternalServerError('Internal server error')
+            self.__logger__.exception('Internal server error')
+        return super()._handle_exception(ex)
+
+    def configure(self, files=None, context=None, **kwargs):
+        _context = {
+            'process_name': self.process_name,
+            'root_path': self.root_path,
+            'data_dir': join(self.root_path, 'data'),
+            'restfulpy_dir': abspath(dirname(__file__))
+        }
+        if context:
+            _context.update(context)
+
+        files = ([files] if isinstance(files, str) else files) or []
+        local_config_file = join(user_config_dir(), '%s.yml' % self.name)
+        if exists(local_config_file):  # pragma: no cover
+            files.insert(0, local_config_file)
+
+        configure(config=self.builtin_configuration, files=files, context=_context, **kwargs)
+
+    # noinspection PyMethodMayBeStatic
+    def register_cli_launchers(self, subparsers):
+        """
+        This is a template method
+        """
+        pass
+
+    def initialize_models(self, session=None):
+        self.engine = create_engine()
+        init_model(self.engine, session=session)
+
+    # Hooks
+    def begin_request(self):
+        self.__authenticator__.authenticate_request()
+
+    # noinspection PyMethodMayBeStatic
+    def end_response(self):
+        DBSession.remove()
+
+    def insert_basedata(self):  # pragma: no cover
+        raise NotImplementedError()
+
+    def insert_mockup(self):  # pragma: no cover
+        raise NotImplementedError()
+
+    def shutdown(self):
+        DBSession.close_all()
+        self.engine.dispose()
