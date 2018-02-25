@@ -1,0 +1,4 @@
+YAML_ENCODING = 'utf8'
+
+DEBUG = False
+SHOW_TRACEBACK = False
