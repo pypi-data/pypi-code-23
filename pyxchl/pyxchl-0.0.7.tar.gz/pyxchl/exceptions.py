@@ -1,0 +1,2 @@
+class PopenError(Exception):
+    pass
