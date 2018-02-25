@@ -1,0 +1,826 @@
+import base64
+import codecs
+import contextlib
+import dbus
+import io
+import mimetypes
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+DEPS_MET = True
+try:
+  import pychromecast
+  import bottle
+  import pycaption
+except Exception as e:
+  print(e)
+  DEPS_MET = False
+  
+try:
+  import gi
+  gi.require_version('Gtk', '3.0')
+  from gi.repository import Gtk, Gdk, GLib, GdkPixbuf, Gio
+except ImportError:
+  line = "-"*70
+  ERROR_MESSAGE = """
+{}
+Python package "gi" (for building the GU not found.\n
+If on Debian or Ubuntu, please run:
+$ sudo apt-get install python3-gi\n
+For other distributions please look up the equivalent package.\n
+If this doesn't work, please report the error here:
+https://github.com/keredson/gnomecast\n
+Thanks! - Gnomecast
+{}
+"""
+  print(ERROR_MESSAGE.format(line,line))
+  sys.exit(1)
+
+__version__ = '0.2.14'
+
+if DEPS_MET:
+  pycaption.WebVTTWriter._encode = lambda self, s: s
+
+
+def throttle(seconds=2):
+  def decorator(f):
+    timer = None
+    lastest_args, latest_kwargs = None, None
+    def run_f():
+      nonlocal timer, lastest_args, latest_kwargs
+      ret = f(*lastest_args, **latest_kwargs)
+      timer = None
+      return ret
+    def wrapper(*args, **kwargs):
+      nonlocal timer, lastest_args, latest_kwargs
+      lastest_args, latest_kwargs = args, kwargs
+      if timer == None:
+        timer = threading.Timer(seconds, run_f)
+        timer.start()
+    return wrapper
+  return decorator
+
+
+AUDIO_EXTS = ('aac','mp3','wav')
+
+class Transcoder(object):
+
+  def __init__(self, cast, fn, done_callback):
+    self.cast = cast
+    self.source_fn = fn
+    self.p = None
+
+    output = subprocess.check_output(['ffmpeg', '-i', fn, '-f', 'ffmetadata', '-'], stderr=subprocess.STDOUT).decode().split('\n')
+    container = fn.lower().split(".")[-1]
+    video_codec = None
+    transcode_audio = container not in AUDIO_EXTS
+    for line in output:
+      line = line.strip()
+      if line.startswith('Stream') and 'Video' in line:
+        video_codec = line.split()[3]
+      elif line.startswith('Stream') and 'Audio' in line and ('aac (LC)' in line or 'aac (HE)' in line):
+        transcode_audio = False
+
+    print('Transcoder', fn, container, video_codec, transcode_audio)
+    
+    self.transcode_video = video_codec and video_codec!='h264'
+    self.transcode_audio = transcode_audio
+    self.transcode_container = container not in ('mp4','aac','mp3','wav')
+    self.transcode = self.transcode_container or self.transcode_video or self.transcode_audio
+    self.progress_bytes = 0
+    self.progress_seconds = 0
+    self.done_callback = done_callback
+    print (self.transcode, self.transcode_video, self.transcode_audio)
+    if self.transcode:
+      self.done = False
+      self.trans_fn = tempfile.mkstemp(suffix='.mp4', prefix='movie_caster_')[1]
+      os.remove(self.trans_fn)
+      # flags = '''-c:v libx264 -profile:v high -level 5 -crf 18 -maxrate 10M -bufsize 16M -pix_fmt yuv420p -x264opts bframes=3:cabac=1 -movflags faststart -c:a libfdk_aac -b:a 320k''' # -vf "scale=iw*sar:ih, scale='if(gt(iw,ih),min(1920,iw),-1)':'if(gt(iw,ih),-1,min(1080,ih))'"
+      args = ['ffmpeg', '-i', self.source_fn, '-c:v', 'h264' if self.transcode_video else 'copy', '-c:a', 'mp3' if self.transcode_audio else 'copy', self.trans_fn] # '-movflags', 'faststart'
+      # args = ['ffmpeg', '-i', self.source_fn, '-c:v', 'libvpx', '-b:v', '5M', '-c:a', 'libvorbis', '-deadline','realtime', self.trans_fn]
+      # args = ['ffmpeg', '-i', self.source_fn] + flags.split() + [self.trans_fn]
+      print(args)
+      self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+      t = threading.Thread(target=self.monitor)
+      t.daemon = True
+      t.start()
+    else:
+      self.trans_fn = None
+      self.done = True
+      self.done_callback()
+  
+  @property
+  def fn(self):
+    return self.trans_fn if self.transcode else self.source_fn
+    
+  def wait_for_byte(self, offset, buffer=128*1024*1024):
+    if self.done: return
+    if self.source_fn.lower().split(".")[-1]=='mp4':
+      while offset > self.progress_bytes + buffer:
+        print('waiting for', offset, 'at', self.progress_bytes + buffer)
+        time.sleep(2)
+    else:
+      while not self.done:
+        print('waiting for transcode to finish')
+        time.sleep(2)
+    print('done waiting')
+  
+  def monitor(self):
+    line = ''
+    r = re.compile(r'=\s+')
+    while True:
+      char = self.p.stdout.read(1).decode()
+      if char == '' and self.p.poll() != None:
+        break
+      if char != '':
+        line += char
+        if char == '\r':
+          # frame=92578 fps=3937 q=-1.0 size= 1142542kB time=01:04:21.14 bitrate=2424.1kbits/s speed= 164x 
+          line = r.sub('=', line)
+          items = [s.split('=') for s in line.split()]
+          d = dict([x for x in items if len(x)==2])
+          print(d)
+          self.progress_bytes = int(d.get('size','0kb')[:-2])*1024
+          self.progress_seconds = parse_ffmpeg_time(d.get('time','00:00:00'))
+          line = ''
+    self.p.stdout.close()
+    self.done = True
+    self.done_callback()
+  
+  def destroy(self):
+    self.cast.media_controller.stop()
+    if self.p:
+      self.p.terminate()
+    if self.trans_fn and os.path.isfile(self.trans_fn):
+      os.remove(self.trans_fn)
+
+
+class Gnomecast(object):
+
+  def __init__(self):
+    self.ip = (([ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")] or [[(s.connect(("8.8.8.8", 53)), s.getsockname()[0], s.close()) for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]]) + [None])[0]
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+      s.bind(('0.0.0.0', 0))
+      self.port = s.getsockname()[1]
+    self.app = bottle.Bottle()
+    self.cast = None
+    self.last_known_player_state = None
+    self.last_known_current_time = None
+    self.last_time_current_time = None
+    self.fn = None
+    self.last_fn_played = None
+    self.transcoder = None
+    self.subtitles = None
+    self.duration = None
+    self.seeking = False
+    self.last_known_volume_level = None
+    bus = dbus.SessionBus()
+    saver = bus.get_object('org.freedesktop.ScreenSaver', '/ScreenSaver')
+    self.saver_interface = dbus.Interface(saver, dbus_interface='org.freedesktop.ScreenSaver')
+    self.inhibit_screensaver_cookie = None
+
+  def run(self):
+    self.build_gui()
+    self.init_casts()
+    threading.Thread(target=self.check_ffmpeg).start()
+    t = threading.Thread(target=self.start_server)
+    t.daemon = True
+    t.start()
+    t = threading.Thread(target=self.monitor_cast)
+    t.daemon = True
+    t.start()
+    if len(sys.argv) > 1:
+        if not os.path.isfile(sys.argv[1]):
+          def f():
+            dialog = Gtk.MessageDialog(self.win, 0, Gtk.MessageType.ERROR, Gtk.ButtonsType.CLOSE, "File not found")
+            dialog.format_secondary_text("Could not find the file %s" % sys.argv[1])
+            dialog.run()
+            dialog.destroy()
+          GLib.idle_add(f)
+        else:
+          self.select_file(sys.argv[1])
+    Gtk.main()
+    
+  def check_ffmpeg(self):
+    time.sleep(1)
+    ffmpeg_available = True
+    print('check_ffmpeg')
+    try:
+      print(subprocess.check_output(['which', 'ffmpeg']))
+    except Exception as e:
+      print(e, e.output)
+      ffmpeg_available = False
+    if not ffmpeg_available:
+      def f():
+        dialog = Gtk.MessageDialog(self.win, 0, Gtk.MessageType.ERROR, Gtk.ButtonsType.CLOSE, "FFMPEG not Found")
+        dialog.format_secondary_text("Could not find ffmpeg.  Please run 'sudo apt-get install ffmpeg'.")
+        dialog.run()
+        dialog.destroy()
+        # TODO: there's a weird pause here closing the dialog.  why?
+        sys.exit(1)
+      GLib.idle_add(f)
+    
+  def start_server(self):
+    app = self.app
+
+    @app.route('/subtitles.vtt')
+    def subtitles():
+      # response = bottle.static_file(self.subtitles_fn, root='/', mimetype='text/vtt')
+      response = bottle.response
+      response.headers['Access-Control-Allow-Origin'] = '*'
+      response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD'
+      response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+      response.headers['Content-Type'] = 'text/vtt'
+      return self.subtitles
+    
+    @app.get('/media/<id>.<ext>')
+    def video(id, ext):
+      print(list(bottle.request.headers.items()))
+      print(self.transcoder.fn)
+      ranges = list(bottle.parse_range_header(bottle.request.environ['HTTP_RANGE'], 1000000000000))
+      print('ranges', ranges)
+      offset, end = ranges[0]
+      self.transcoder.wait_for_byte(offset)
+      response = bottle.static_file(self.transcoder.fn, root='/')
+      response.headers['Access-Control-Allow-Origin'] = '*'
+      response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD'
+      response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+      return response
+
+    # app.run(host=self.ip, port=self.port, server='paste', daemon=True)
+    from paste import httpserver
+    from paste.translogger import TransLogger
+    handler = TransLogger(app, setup_console_handler=True)
+    httpserver.serve(handler, host=self.ip, port=str(self.port), daemon_threads=True)
+
+  def update_status(self):
+    if self.fn is None:
+      self.file_button.set_label("Choose an audio or video file...")
+      return
+    fn = os.path.basename(self.fn)
+    if len(fn) > 60:
+      fn = fn[:50] + '...' + fn[-10:]
+    notes = [fn]
+    if self.duration is not None:
+      notes.append(self.humanize_seconds(self.duration))
+    else:
+      notes.append('Loading...')
+#    if self.last_known_player_state and self.last_known_player_state!='UNKNOWN':
+#      notes.append('Cast: %s' % self.last_known_player_state)
+    if self.transcoder and not self.transcoder.done:
+      notes.append('Converting: %i%%' % (self.transcoder.progress_seconds*100 // self.duration))
+    self.file_button.set_label('  -  '.join(notes))
+    
+  def monitor_cast(self):
+    while True:
+      time.sleep(1)
+      if not self.cast: continue
+      seeking = self.seeking
+      cast = self.cast
+      mc = cast.media_controller
+      if mc.status.player_state != self.last_known_player_state:
+        if mc.status.player_state=='PLAYING' and self.last_known_player_state=='BUFFERING' and seeking:
+          self.seeking = False
+        if mc.status.player_state=='PLAYING':
+          self.inhibit_screensaver()
+        else:
+          self.restore_screensaver()
+        self.last_known_player_state = mc.status.player_state
+        def f():
+          self.update_media_button_states()
+          self.update_status()
+        GLib.idle_add(f)
+      elif self.transcoder and not self.transcoder.done:
+        def f():
+          self.update_status()
+        GLib.idle_add(f)
+      if self.last_known_current_time != mc.status.current_time:
+        self.last_known_current_time = mc.status.current_time
+        self.last_time_current_time = time.time()
+      if not seeking and mc.status.player_state=='PLAYING':
+        GLib.idle_add(lambda: self.scrubber_adj.set_value(mc.status.current_time + time.time() - self.last_time_current_time))
+
+  def init_casts(self, widget=None):
+    self.cast_store.clear()
+    self.cast_store.append([None, "Searching local network - please wait..."])
+    self.cast_combo.set_active(0)
+    threading.Thread(target=self.load_casts).start()
+    
+  def inhibit_screensaver(self):
+    if self.inhibit_screensaver_cookie: return
+    self.inhibit_screensaver_cookie = self.saver_interface.Inhibit("Gnomecast", "Player is playing...")
+    print('disabled screensaver')
+
+  def restore_screensaver(self):
+    if self.inhibit_screensaver_cookie:
+      self.saver_interface.UnInhibit(self.inhibit_screensaver_cookie)
+      self.inhibit_screensaver_cookie = None
+      print('restored screensaver')
+
+  def load_casts(self):
+    chromecasts = pychromecast.get_chromecasts()
+    def f():
+      self.cast_store.clear()
+      self.cast_store.append([None, "Select a cast device..."])
+      for cc in chromecasts:
+        friendly_name = cc.device.friendly_name
+        if cc.cast_type!='cast':
+          friendly_name = '%s (%s)' % (friendly_name, cc.cast_type)
+        self.cast_store.append([cc, friendly_name])
+      self.cast_combo.set_active(0)
+    GLib.idle_add(f)
+  
+  def update_media_button_states(self):
+    mc = self.cast.media_controller if self.cast else None
+    self.play_button.set_sensitive(bool(self.transcoder and self.cast and mc.status.player_state in ('BUFFERING','PLAYING','PAUSED','IDLE','UNKNOWN') and self.fn))
+    self.volume_button.set_sensitive(bool(self.cast))
+    self.stop_button.set_sensitive(bool(self.transcoder and self.cast and mc.status.player_state in ('BUFFERING','PLAYING','PAUSED')))
+    self.rewind_button.set_sensitive(bool(self.transcoder and self.cast and mc.status.player_state in ('PLAYING','PAUSED')))
+    self.forward_button.set_sensitive(bool(self.transcoder and self.cast and mc.status.player_state in ('PLAYING','PAUSED')))
+    self.play_button.set_image(Gtk.Image(stock=Gtk.STOCK_MEDIA_PAUSE) if self.cast and mc.status.player_state=='PLAYING' else Gtk.Image(stock=Gtk.STOCK_MEDIA_PLAY))
+    if self.transcoder and self.duration:
+      self.scrubber_adj.set_upper(self.duration)
+      self.scrubber.set_sensitive(True)
+    else:
+      self.scrubber.set_sensitive(False)
+
+
+  def build_gui(self):
+    self.win = win = Gtk.Window(title='Gnomecast v%s' % __version__)
+    win.set_border_width(0)
+    win.set_icon(self.get_logo_pixbuf(color='#000000'))
+    self.cast_store = cast_store = Gtk.ListStore(object, str)
+
+    vbox_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+    vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+    
+    self.thumbnail_image = Gtk.Image()
+    self.thumbnail_image.set_from_pixbuf(self.get_logo_pixbuf())
+    vbox_outer.pack_start(self.thumbnail_image, True, False, 0)
+    alignment = Gtk.Alignment(xscale=1, yscale=1)
+    alignment.add(vbox)
+    alignment.set_padding(16, 20, 16, 16)
+    vbox_outer.pack_start(alignment, False, False, 0)
+
+    hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    vbox.pack_start(hbox, False, False, 0)
+    self.cast_combo = cast_combo = Gtk.ComboBox.new_with_model(cast_store)
+    cast_combo.set_entry_text_column(1)
+    renderer_text = Gtk.CellRendererText()
+    cast_combo.pack_start(renderer_text, True)
+    cast_combo.add_attribute(renderer_text, "text", 1)
+    hbox.pack_start(cast_combo, True, True, 0)
+    refresh_button = Gtk.Button(None, image=Gtk.Image(stock=Gtk.STOCK_REFRESH))
+    refresh_button.connect("clicked", self.init_casts)
+    hbox.pack_start(refresh_button, False, False, 0)
+
+    win.add(vbox_outer)
+
+    self.file_button = button1 = Gtk.Button("Choose an audio or video file...")
+    button1.connect("clicked", self.on_file_clicked)
+    vbox.pack_start(button1, False, False, 0)
+
+    self.subtitle_store = subtitle_store = Gtk.ListStore(str, int, str)
+    subtitle_store.append(["No subtitles.", -1, None])
+    subtitle_store.append(["Add subtitle file...", -2, None])
+    self.subtitle_combo = Gtk.ComboBox.new_with_model(subtitle_store)
+    self.subtitle_combo.connect("changed", self.on_subtitle_combo_changed)
+    self.subtitle_combo.set_entry_text_column(0)
+    renderer_text = Gtk.CellRendererText()
+    self.subtitle_combo.pack_start(renderer_text, True)
+    self.subtitle_combo.add_attribute(renderer_text, "text", 0)
+    self.subtitle_combo.set_active(0)
+    vbox.pack_start(self.subtitle_combo, False, False, 0)
+    
+    self.scrubber_adj = Gtk.Adjustment(0, 0, 100, 15, 60, 0)
+    self.scrubber = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=self.scrubber_adj)
+    self.scrubber.set_digits(0)
+    def f(scale, s):
+      notes = [self.humanize_seconds(s)]
+      if self.cast and self.cast.media_controller.status.player_state=='BUFFERING':
+        notes.append('...')
+      return ''.join(notes)
+    self.scrubber.connect("format-value", f)
+    self.scrubber.connect("change-value", self.scrubber_move_started)
+    self.scrubber.connect("change-value", self.scrubber_moved)
+    self.scrubber.set_sensitive(False)
+    vbox.pack_start(self.scrubber, False, False, 0)
+
+    hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+    self.rewind_button = Gtk.Button(None, image=Gtk.Image(stock=Gtk.STOCK_MEDIA_REWIND))
+    self.rewind_button.connect("clicked", self.rewind_clicked)
+    self.rewind_button.set_sensitive(False)
+    self.rewind_button.set_relief(Gtk.ReliefStyle.NONE)
+    hbox.pack_start(self.rewind_button, True, False, 0)
+    self.play_button = Gtk.Button(None, image=Gtk.Image(stock=Gtk.STOCK_MEDIA_PLAY))
+    self.play_button.connect("clicked", self.play_clicked)
+    self.play_button.set_sensitive(False)
+    self.play_button.set_relief(Gtk.ReliefStyle.NONE)
+    hbox.pack_start(self.play_button, True, False, 0)
+    self.forward_button = Gtk.Button(None, image=Gtk.Image(stock=Gtk.STOCK_MEDIA_FORWARD))
+    self.forward_button.connect("clicked", self.forward_clicked)
+    self.forward_button.set_sensitive(False)
+    self.forward_button.set_relief(Gtk.ReliefStyle.NONE)
+    hbox.pack_start(self.forward_button, True, False, 0)
+    self.stop_button = Gtk.Button(None, image=Gtk.Image(stock=Gtk.STOCK_MEDIA_STOP))
+    self.stop_button.connect("clicked", self.stop_clicked)
+    self.stop_button.set_sensitive(False)
+    self.stop_button.set_relief(Gtk.ReliefStyle.NONE)
+    hbox.pack_start(self.stop_button, True, False, 0)
+    self.volume_button = Gtk.VolumeButton()
+    self.volume_button.set_value(1)
+    self.volume_button.connect("value-changed", self.volume_moved)
+    self.volume_button.set_sensitive(False)
+    hbox.pack_start(self.volume_button, True, False, 0)
+    vbox.pack_start(hbox, False, False, 0)
+    
+    cast_combo.connect("changed", self.on_cast_combo_changed)
+
+    win.connect("delete-event", self.quit)
+    win.connect("key_press_event", self.on_key_press)
+    win.show_all()
+    win.resize(1,1)
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, self.quit)
+
+  def scrubber_move_started(self, scale, scroll_type, seconds):
+    print('scrubber_move_started', seconds)
+    self.seeking = True
+
+  @throttle(seconds=1)
+  def volume_moved(self, button, volume):
+    if self.last_known_volume_level != volume:
+      self.last_known_volume_level = volume
+      self.cast.set_volume(volume)
+      print('setting volume', volume)
+
+  @throttle()
+  def scrubber_moved(self, scale, scroll_type, seconds):
+    print('scrubber_moved', seconds)
+    self.seeking = True
+    self.cast.media_controller.seek(seconds)
+
+  def humanize_seconds(self, s):
+    s = int(s)
+    hours = s // (60*60)
+    minutes = (s // 60) % 60
+    seconds = s % 60
+    if hours:
+      return '%ih %im %is' % (hours, minutes, seconds)
+    if minutes:
+      return '%im %is' % (minutes, seconds)
+    else:
+      return '%is' % (seconds)
+    
+
+  def stop_clicked(self, widget):
+    if not self.cast: return
+    self.cast.media_controller.stop()
+    
+  def get_logo_pixbuf(self, width=200, color=None):
+    svg = LOGO_SVG
+    if color:
+      svg = svg.replace('#aaaaaa', color)
+    f = Gio.MemoryInputStream.new_from_bytes(GLib.Bytes.new(svg.encode()))
+    preserve_aspect_ratio = True
+    pixbuf = GdkPixbuf.Pixbuf.new_from_stream(f, None)
+    return pixbuf
+
+  
+  def quit(self, a=0, b=0):
+    if self.transcoder:
+      self.transcoder.destroy()
+    if self.cast:
+      self.cast.media_controller.stop()
+    self.restore_screensaver()
+    Gtk.main_quit()
+
+  def forward_clicked(self, widget):
+    self.seek_delta(30)
+    
+  def rewind_clicked(self, widget):
+    self.seek_delta(-10)
+    
+  def seek_delta(self, delta):
+    seconds = self.cast.media_controller.status.current_time + time.time() - self.last_time_current_time + delta
+    self.last_time_current_time = time.time()
+    self.cast.media_controller.status.current_time = seconds
+    self.scrubber_adj.set_value(seconds)
+    self.seeking = True
+    self.cast.media_controller.seek(seconds)
+    
+  def play_clicked(self, widget):
+    if not self.cast:
+      print('no cast selected')
+      return
+    cast = self.cast
+    mc = cast.media_controller
+    
+    if mc.status.player_state in ('IDLE','UNKNOWN') or self.last_fn_played != self.fn:
+      self.last_fn_played = self.fn
+      cast.wait()
+      mc = cast.media_controller
+      kwargs = {}
+      if self.subtitles:
+        kwargs['subtitles'] = 'http://%s:%s/subtitles.vtt' % (self.ip, self.port)
+      ext = self.fn.split('.')[-1]
+      ext = ''.join(ch for ch in ext if ch.isalnum()).lower()
+      mc.play_media('http://%s:%s/media/%s.%s' % (self.ip, self.port, hash(self.fn), ext), 'audio/%s'%ext if ext in AUDIO_EXTS else 'video/mp4', **kwargs)
+      print(cast.status)
+      print(mc.status)
+    elif mc.status.player_state=='PLAYING':
+      mc.pause()
+    elif mc.status.player_state=='PAUSED':
+      mc.play()
+
+  def on_file_clicked(self, widget):
+      dialog = Gtk.FileChooserDialog("Please choose an audio or video file...", self.win,
+          Gtk.FileChooserAction.OPEN,
+          (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+           Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+
+      filter_py = Gtk.FileFilter()
+      filter_py.set_name("Videos")
+      filter_py.add_mime_type("video/*")
+      filter_py.add_mime_type("audio/*")
+      dialog.add_filter(filter_py)
+        
+      response = dialog.run()
+      if response == Gtk.ResponseType.OK:
+          print("Open clicked")
+          print("File selected: " + dialog.get_filename())
+          self.select_file(dialog.get_filename())
+      elif response == Gtk.ResponseType.CANCEL:
+          print("Cancel clicked")
+
+      dialog.destroy()
+      
+  def on_new_subtitle_clicked(self):
+      dialog = Gtk.FileChooserDialog("Please choose a subtitle file...", self.win,
+          Gtk.FileChooserAction.OPEN,
+          (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+           Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+
+      filter_py = Gtk.FileFilter()
+      filter_py.set_name("Subtitles")
+      filter_py.add_pattern("*.srt")
+      filter_py.add_pattern("*.vtt")
+      dialog.add_filter(filter_py)
+        
+      response = dialog.run()
+      if response == Gtk.ResponseType.OK:
+          print("Open clicked")
+          print("File selected: " + dialog.get_filename())
+          self.select_subtitles_file(dialog.get_filename())
+      elif response == Gtk.ResponseType.CANCEL:
+          print("Cancel clicked")
+          self.subtitle_combo.set_active(0)
+
+      dialog.destroy()
+      
+  def select_subtitles_file(self, fn):
+    ext = fn.split('.')[-1]
+    display_name = os.path.basename(fn)
+    if ext=='vtt':
+      with open(fn) as f:
+        self.subtitles = f.read()
+    else:
+      with open(fn) as f:
+        caps = f.read()
+      if caps.startswith('\ufeff'): # BOM
+        caps = caps[1:]
+      converter = pycaption.CaptionConverter()
+      converter.read(caps, pycaption.detect_format(caps)())
+      self.subtitles = converter.write(pycaption.WebVTTWriter())
+    pos = len(self.subtitle_store)
+    self.subtitle_store.append([display_name, pos-2, self.subtitles])
+    self.subtitle_combo.set_active(pos)
+    
+  def select_file(self, fn):
+    self.file_button.set_label(os.path.basename(fn))
+    self.thumbnail_image.set_from_pixbuf(self.get_logo_pixbuf())
+    self.fn = fn
+    if self.cast:
+      self.cast.media_controller.stop()
+    threading.Thread(target=self.gen_thumbnail).start()
+    threading.Thread(target=self.update_transcoder).start()
+  
+  def update_transcoder(self):
+    if self.transcoder: 
+      self.transcoder.destroy()
+      self.transcoder = None
+    if self.cast and self.fn:
+      self.transcoder = Transcoder(self.cast, self.fn, lambda: GLib.idle_add(self.update_status))
+    GLib.idle_add(self.update_media_button_states)
+        
+  def gen_thumbnail(self):
+    container = self.fn.lower().split(".")[-1]
+    thumbnail_fn = None
+    subtitle_ids = []
+    if container in ('aac','mp3','wav'):
+      cmd = ['ffmpeg', '-i', self.fn, '-f', 'ffmetadata', '-']
+    else:
+      thumbnail_fn = tempfile.mkstemp(suffix='.jpg', prefix='moviecaster_thumbnail_')[1]
+      os.remove(thumbnail_fn)
+      cmd = ['ffmpeg', '-y', '-i', self.fn, '-f', 'mjpeg', '-vframes', '1', '-ss', '27', '-vf', 'scale=600:-1', thumbnail_fn]
+    self.ffmpeg_desc = output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+    for line in output.decode().split('\n'):
+      line = line.strip()
+      if line.startswith('Duration:'):
+        self.duration = parse_ffmpeg_time(line.split()[1].strip(','))
+      if line.startswith('Stream') and 'Subtitle' in line:
+        id = line.split()[1].strip('#').replace(':','.')
+        id = id[:id.index('(')]
+        subtitle_ids.append(id)
+    print('subtitle_ids', subtitle_ids)
+    def f():
+      if thumbnail_fn:
+        self.thumbnail_image.set_from_file(thumbnail_fn)
+        os.remove(thumbnail_fn)
+        self.win.resize(1,1)
+      self.update_status()
+    GLib.idle_add(f)
+    new_subtitles = []
+    for subtitle_id in subtitle_ids:
+      srt_fn = tempfile.mkstemp(suffix='.srt', prefix='moviecaster_')[1]
+      output = subprocess.check_output(['ffmpeg', '-y', '-i', self.fn, '-vn', '-an', '-codec:s:%s' % subtitle_id, 'srt', srt_fn], stderr=subprocess.STDOUT)
+      with open(srt_fn) as f:
+        caps = f.read()
+      print('caps', caps)
+      converter = pycaption.CaptionConverter()
+      converter.read(caps, pycaption.detect_format(caps)())
+      subtitles = converter.write(pycaption.WebVTTWriter())
+      new_subtitles.append((subtitle_id, subtitles))
+      os.remove(srt_fn)
+    def f():
+      pos = len(self.subtitle_store)
+      for id, subs in new_subtitles:
+        self.subtitle_store.append([id, pos-2, subs])
+        pos += 1
+    GLib.idle_add(f)
+
+  def on_key_press(self, widget, event, user_data=None):
+    key = Gdk.keyval_name(event.keyval)
+    ctrl = (event.state & Gdk.ModifierType.CONTROL_MASK)
+    if key=='q' and ctrl:
+      self.quit()
+      return True
+    return False
+
+  def on_cast_combo_changed(self, combo):
+      tree_iter = combo.get_active_iter()
+      if tree_iter is not None:
+          model = combo.get_model()
+          cast, name = model[tree_iter][:2]
+          print(cast)
+          self.cast = cast
+          if cast:
+            self.last_known_volume_level = cast.media_controller.status.volume_level
+            self.volume_button.set_value(cast.media_controller.status.volume_level)
+          self.last_known_player_state = None
+          self.update_media_button_states()
+          threading.Thread(target=self.update_transcoder).start()
+      else:
+          entry = combo.get_child()
+
+  def on_subtitle_combo_changed(self, combo):
+      tree_iter = combo.get_active_iter()
+      if tree_iter is not None:
+          model = combo.get_model()
+          text, position, subs = model[tree_iter]
+          print(text, position, subs)
+          if position==-1: self.subtitles = None
+          elif position==-2: self.on_new_subtitle_clicked()
+          else: self.subtitles = subs
+      else:
+          entry = combo.get_child()
+
+def parse_ffmpeg_time(time_s):
+  hours, minutes, seconds = (float(s) for s in time_s.split(':'))
+  return hours*60*60 + minutes*60 + seconds
+  
+  
+# this is embedded here because i gave up trying to get pip to handle a non-python file
+LOGO_SVG = '''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   xmlns:dc="http://purl.org/dc/elements/1.1/"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   version="1.0"
+   width="400"
+   height="340"
+   id="svg1903"
+   sodipodi:docname="logo2.svg"
+   inkscape:version="0.92.1 r15371">
+  <metadata
+     id="metadata18">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:format>image/svg+xml</dc:format>
+        <dc:type
+           rdf:resource="http://purl.org/dc/dcmitype/StillImage" />
+        <dc:title></dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <sodipodi:namedview
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1"
+     objecttolerance="10"
+     gridtolerance="10"
+     guidetolerance="10"
+     inkscape:pageopacity="0"
+     inkscape:pageshadow="2"
+     inkscape:window-width="1227"
+     inkscape:window-height="926"
+     id="namedview16"
+     showgrid="false"
+     fit-margin-top="100"
+     fit-margin-left="100"
+     fit-margin-right="100"
+     fit-margin-bottom="100"
+     inkscape:zoom="0.48337649"
+     inkscape:cx="272.94153"
+     inkscape:cy="365.88387"
+     inkscape:window-x="1506"
+     inkscape:window-y="557"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="svg1903" />
+  <defs
+     id="defs1905" />
+  <g
+     transform="matrix(0.32014843,0,0,0.32014843,123.60933,34.982023)"
+     id="layer1">
+    <g
+       transform="translate(925.8326,120.8762)"
+       id="g3963">
+      <g
+         transform="matrix(2.914897,0,0,2.914897,-717.5904,128.5015)"
+         style="fill:#aaaaaa;fill-opacity:1;fill-rule:nonzero;stroke:none;stroke-miterlimit:4"
+         id="g3771">
+        <g
+           style="fill:#aaaaaa;fill-opacity:1"
+           id="g3773">
+          <path
+             d="M 86.068,0 C 61.466,0 56.851,35.041 70.691,35.041 84.529,35.041 110.671,0 86.068,0 Z"
+             style="fill:#aaaaaa;fill-opacity:1"
+             id="path3775"
+             inkscape:connector-curvature="0" />
+          <path
+             d="M 45.217,30.699 C 52.586,31.149 60.671,2.577 46.821,4.374 32.976,6.171 37.845,30.249 45.217,30.699 Z"
+             style="fill:#aaaaaa;fill-opacity:1"
+             id="path3777"
+             inkscape:connector-curvature="0" />
+          <path
+             d="M 11.445,48.453 C 16.686,46.146 12.12,23.581 3.208,29.735 -5.7,35.89 6.204,50.759 11.445,48.453 Z"
+             style="fill:#aaaaaa;fill-opacity:1"
+             id="path3779"
+             inkscape:connector-curvature="0" />
+          <path
+             d="M 26.212,36.642 C 32.451,35.37 32.793,9.778 21.667,14.369 10.539,18.961 19.978,37.916 26.212,36.642 Z"
+             style="fill:#aaaaaa;fill-opacity:1"
+             id="path3781"
+             inkscape:connector-curvature="0" />
+          <path
+             d="m 58.791,93.913 c 1.107,8.454 -6.202,12.629 -13.36,7.179 C 22.644,83.743 83.16,75.088 79.171,51.386 75.86,31.712 15.495,37.769 8.621,68.553 3.968,89.374 27.774,118.26 52.614,118.26 c 12.22,0 26.315,-11.034 28.952,-25.012 C 83.58,82.589 57.867,86.86 58.791,93.913 Z"
+             style="fill:#aaaaaa;fill-opacity:1"
+             id="path3783"
+             inkscape:connector-curvature="0" />
+        </g>
+      </g>
+    </g>
+  </g>
+  <g
+     id="cast"
+     transform="matrix(0.53475936,0,0,0.53475936,50,20)">
+    <path
+       d="M 510,51 H 51 C 22.95,51 0,73.95 0,102 v 76.5 H 51 V 102 H 510 V 459 H 331.5 v 51 H 510 c 28.05,0 51,-22.95 51,-51 V 102 C 561,73.95 538.05,51 510,51 Z M 0,433.5 V 510 H 76.5 C 76.5,466.65 43.35,433.5 0,433.5 Z m 0,-102 v 51 c 71.4,0 127.5,56.1 127.5,127.5 h 51 C 178.5,410.55 99.45,331.5 0,331.5 Z m 0,-102 v 51 c 127.5,0 229.5,102 229.5,229.5 h 51 C 280.5,354.45 155.55,229.5 0,229.5 Z"
+       id="path12"
+       style="fill:#aaaaaa;fill-opacity:1"
+       inkscape:connector-curvature="0" />
+  </g>
+</svg>'''
+
+def main():
+  caster = Gnomecast()
+  caster.run()
+
+if DEPS_MET and __name__=='__main__':
+  main()
+  
+
