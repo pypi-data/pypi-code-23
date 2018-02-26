@@ -1,0 +1,54 @@
+# -*- coding: utf-8 -*-
+
+"""This code is a part of Hydra Toolkit
+
+.. module:: hydratk.extensions.datagen.translation.cs.help
+   :platform: Unix
+   :synopsis: Czech language translation for Datagen extension help generator
+.. moduleauthor:: Petr Rašek <bowman@hydratk.org>
+
+"""
+language = {
+    'name': 'Čeština',
+    'ISO-639-1': 'cs'
+}
+
+''' Datagen Commands '''
+help_cmd = {
+    'gen-asn1': 'enkódovat textový soubor, dekódovat binární soubor podle ASN.1 specifikace',
+    'gen-json': 'generovat vzorový json soubor podle JSON specifikace',
+    'gen-xml': 'generovat vzorový xml soubor podle WSDL/XSD specifikace',
+    'gen-selenium': 'převést Selenium skript do Yoda formátu',
+
+    # standalone with option profile datagen
+    'asn1': 'enkódovat textový soubor, dekódovat binární soubor podle ASN.1 specifikace',
+    'json': 'generovat vzorový json soubor podle JSON specifikace',
+    'xml': 'generovat vzorový xml soubor podle WSDL/XSD specifikace',
+    'selenium': 'převést Selenium skript do Yoda formátu'
+}
+
+''' Datagen Options '''
+help_opt = {
+    'gen-spec': {'{h}--gen-spec <cesta>{e}': {'description': 'soubor se specifikací', 'commands': ('gen-asn1', 'gen-json', 'gen-xml')}},
+    'gen-input': {'{h}--gen-input <cesta>{e}': {'description': 'vstupní soubor', 'commands': ('gen-asn1')}},
+    'gen-output': {'{h}[--gen-output <cesta>]{e}': {'description': 'výstupní soubor, default vstupní soubor s jinou příponou nebo sample.json, sample.xml', 'commands': ('gen-asn1', 'gen-json', 'gen-xml', 'gen-selenium')}},
+    'gen-action': {'{h}--gen-action compile|decode|encode|transcode{e}': {'description': 'akce', 'commands': ('gen-asn1')}},
+    'gen-element': {'{h}--gen-element <název>{e}': {'description': 'název elementu ze specifikace', 'commands': ('gen-asn1', 'gen-xml')}},
+    'gen-iformat': {'{h}[--gen-iformat ber|der|oer|aper|uper|xer|gser]{e}': {'description': 'vstupní formát, default ber pro akci decode, gser pro akci encode', 'commands': ('gen-asn1')}},
+    'gen-oformat': {'{h}[--gen-oformat ber|der|oer|aper|uper|xer|gser]{e}': {'description': 'výstupní formát, default ber pro akci encode, gser pro akci decode', 'commands': ('gen-asn1')}},
+    'gen-envelope': {'{h}[--gen-envelope]{e}': {'description': 'generovat včetně SOAP obálky', 'commands': ('gen-xml')}},
+    'gen-browser': {'{h}[--gen-browser <title>]{e}': {'description': 'použitý prohlížeč, default Firefox', 'commands': ('gen-selenium')}},
+    'gen-timeout': {'{h}[--gen-timeout <number>]{e}': {'description': 'timeout pro wait příkazy, default 10', 'commands': ('gen-selenium')}},
+
+    # standalone with option profile datagen
+    'spec': {'{h}--spec <cesta>{e}': {'description': 'soubor se specifikací', 'commands': ('asn1', 'json', 'xml')}},
+    'input': {'{h}--input <cesta>{e}': {'description': 'vstupní soubor', 'commands': ('asn1')}},
+    'output': {'{h}[--output <cesta>]{e}': {'description': 'výstupní soubor, default vstupní soubor s jinou příponou nebo sample.json, sample.xml', 'commands': ('asn1', 'json', 'xml', 'selenium')}},
+    'action': {'{h}--action compile|decode|encode|transcode{e}': {'description': 'akce', 'commands': ('asn1')}},
+    'element': {'{h}--element <název>{e}': {'description': 'název elementu ze specifikace', 'commands': ('asn1', 'xml')}},
+    'iformat': {'{h}[--iformat ber|der|oer|aper|uper|xer|gser]{e}': {'description': 'vstupní formát, default ber pro akci decode, gser pro akci encode', 'commands': ('asn1')}},
+    'oformat': {'{h}[--oformat ber|der|oer|aper|uper|xer|gser]{e}': {'description': 'výstupní formát, default ber pro akci encode, gser pro akci decode', 'commands': ('asn1')}},
+    'envelope': {'{h}[--envelope]{e}': {'description': 'generovat včetně SOAP obálky', 'commands': ('xml')}},
+    'browser': {'{h}[--browser <title>]{e}': {'description': 'použitý prohlížeč, default Firefox', 'commands': ('selenium')}},
+    'timeout': {'{h}[--timeout <number>]{e}': {'description': 'timeout pro wait příkazy, default 10', 'commands': ('selenium')}}
+}
