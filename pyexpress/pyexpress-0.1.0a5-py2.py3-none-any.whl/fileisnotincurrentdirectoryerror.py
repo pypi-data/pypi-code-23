@@ -1,0 +1,2 @@
+class FileIsNotInCurrentDirectoryError(Exception):
+    pass
