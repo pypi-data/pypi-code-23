@@ -1,0 +1,2 @@
+class HttpResponseClosedError(Exception):
+    pass
