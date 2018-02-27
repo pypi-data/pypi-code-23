@@ -1,0 +1,8 @@
+__title__ = 'aliyun-python-sdk-iot-client'
+__version__ = '0.0.8'
+__author__ = 'Aliyun'
+__author_email__ = 'aliyun-developers-efficiency@list.alibaba-inc.com'
+__url__ = 'http://develop.aliyun.com/sdk/python'
+__copyright__ = 'Aliyun'
+__license__ = 'Apache 2.0'
+__description__ = 'aliyun iot client sdk'
