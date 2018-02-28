@@ -1,0 +1,64 @@
+from __future__ import absolute_import
+import logging
+import os
+import lintreview.docker as docker
+from lintreview.tools import Tool, process_quickfix
+
+log = logging.getLogger(__name__)
+
+
+class Golint(Tool):
+    """
+    Run golint on files. This may need to offer config options
+    to map packages -> dirs so we can run golint once per package.
+    """
+
+    name = 'golint'
+
+    def check_dependencies(self):
+        """
+        See if golint image exists
+        """
+        return docker.image_exists('golint')
+
+    def match_file(self, filename):
+        base = os.path.basename(filename)
+        name, ext = os.path.splitext(base)
+        return ext == '.go'
+
+    def process_files(self, files):
+        """
+        Run code checks with golint.
+        Only a single process is made for all files
+        to save resources.
+        """
+        command = self.create_command(files)
+        output = docker.run('golint', command, self.base_path)
+        output = output.strip().split("\n")
+        # Look for multi-package error message, and re-run tools
+        if len(output) == 1 and 'is in package' in output[0]:
+            log.info('Re-running golint on individual files'
+                     'as diff contains files from multiple packages: %s',
+                     output[0])
+            self.run_individual_files(files, docker.strip_base)
+        else:
+            process_quickfix(self.problems, output, docker.strip_base)
+
+    def create_command(self, files):
+        command = ['golint']
+        if 'min_confidence' in self.options:
+            command += ['-min_confidence', self.options.get('min_confidence')]
+        command += files
+        return command
+
+    def run_individual_files(self, files, filename_converter):
+        """
+        If we get an error from golint about different packages
+        we have to re-run golint on each file as figuring out package
+        relations is hard.
+        """
+        for filename in files:
+            command = self.create_command([filename])
+            output = docker.run('golint', command, self.base_path)
+            output = output.split("\n")
+            process_quickfix(self.problems, output, filename_converter)
