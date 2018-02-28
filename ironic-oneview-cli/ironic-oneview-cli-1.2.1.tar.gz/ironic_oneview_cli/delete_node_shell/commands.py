@@ -1,0 +1,70 @@
+# Copyright (2016-2017) Hewlett Packard Enterprise Development LP
+# Copyright (2016-2017) Universidade Federal de Campina Grande
+# All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+from ironic_oneview_cli import common
+from ironic_oneview_cli import facade
+
+
+class NodeDelete(object):
+
+    def __init__(self, delete_facade):
+        self.facade = delete_facade
+
+    def manage_delete(self, number=None):
+        nodes = self.facade.get_ironic_node_list()
+        try:
+            if number:
+                self.delete_n_nodes(nodes, number)
+            else:
+                for node in nodes:
+                    self.facade.node_delete(node.uuid)
+        except Exception:
+            raise
+
+    def delete_n_nodes(self, nodes, number):
+        upper_limit = min(number, len(nodes))
+        try:
+            for n in range(upper_limit):
+                self.facade.node_delete(nodes[n].uuid)
+        except Exception:
+            raise
+
+
+@common.arg(
+    '--all',
+    action='store_true',
+    help='Delete all ironic nodes'
+)
+@common.arg(
+    '-n', '--number',
+    type=int,
+    help='Delete multiple ironic nodes'
+)
+def do_node_delete(args):
+    """Delete nodes in Ironic."""
+    node_delete = NodeDelete(facade.Facade(args))
+
+    if args.all:
+        message = '\nDo you really want to delete all nodes? [y/N] '
+        response = common.approve_command_prompt(message)
+        if response:
+            node_delete.manage_delete()
+            print('\nNodes deleted!')
+    elif args.number:
+        node_delete.manage_delete(args.number)
+        print('\nNodes deleted!')
+    else:
+        print('\nNot implemented')
