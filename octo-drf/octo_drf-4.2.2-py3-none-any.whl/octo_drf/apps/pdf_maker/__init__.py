@@ -1,0 +1,1 @@
+default_app_config = 'octo_drf.apps.pdf_maker.apps.PDFMakerConfig'
