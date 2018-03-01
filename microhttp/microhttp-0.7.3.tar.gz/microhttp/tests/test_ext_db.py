@@ -1,0 +1,160 @@
+import mock
+import unittest
+
+from sqlalchemy import MetaData, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+
+from nanohttp import Controller, html, settings
+
+from microhttp import Application as BaseApplication
+from microhttp.ext import db
+from microhttp.tests.helpers import WebTestCase
+
+
+metadata = MetaData()
+DeclarativeBase = declarative_base(metadata=metadata)
+
+
+class Tag(DeclarativeBase):
+    __tablename__ = 'tags'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    tag = Column(String(120), nullable=False, unique=True)
+
+
+class TestCase(WebTestCase):
+
+    # noinspection PyAbstractClass
+    class Application(BaseApplication):
+        class Root(Controller):
+            @html
+            def index(self):
+                db_session = db.get_session()
+                db_session.execute('SELECT * FROM sqlite_master')
+                return ''
+
+            @html
+            def db2(self):
+                db_session = db.get_session('db2')
+                db_session.execute('SELECT * FROM sqlite_master')
+                return ''
+
+            @html
+            @db.commit
+            def new(self):
+                db_session = db.get_session('db2')
+                db_session.execute("""
+                    CREATE TABLE BOOKS ( title TEXT NOT NULL, publication_date TEXT)
+                """)
+                return ''
+
+            @html
+            @db.commit
+            def fail(self):
+                db_session = db.get_session('db2')
+                metadata.create_all(bind=db_session.get_bind())
+                tag = Tag()
+                tag.tag = 'Book'
+                db_session.add(tag)
+
+                tag = Tag()
+                tag.tag = 'Book'
+                db_session.add(tag)
+                return ''
+
+            @html
+            def all_sessions(self):
+                return ','.join(db.get_sessions().keys())
+
+        def __init__(self):
+            super().__init__(self.Root())
+
+        def configure(self, *args, **kwargs):
+            super().configure(*args, **kwargs)
+            settings.merge("""
+                sqlalchemy:
+                  default:
+                    engine:
+                      name_or_url: 'sqlite:///%(microhttp_dir)s/tests/stuff/default.db'
+                      echo: false
+                    session:
+                      autoflush: True
+                      autocommit: False
+                      expire_on_commit: True
+                  db2:
+                    engine:
+                      name_or_url: 'sqlite:///%(microhttp_dir)s/tests/stuff/db2.db'
+                      echo: false
+                    session:
+                      autoflush: True
+                      autocommit: False
+                      expire_on_commit: True
+                  db3:
+                    admin_db_url: 'mysql+pymysql://john:doe@somehost'
+                    engine:
+                      name_or_url: 'mysql+pymysql://scott:tiger@somehost/xyz'
+                  db4:
+                    admin_db_url: 'postgresql://john:doe@localhost'
+                    engine:
+                      name_or_url: 'postgresql://scott:tiger@localhost/postgres'
+            """)
+            db.configure()
+
+    def setUp(self):
+        super().setUp()
+        with db.get_database_manager() as manager:
+            manager.create_database_if_not_exists()
+
+        with db.get_database_manager('db2') as manager:
+            manager.create_database_if_not_exists()
+
+    def tearDown(self):
+        super().tearDown()
+        with db.get_database_manager() as manager:
+            manager.drop_database()
+
+        with db.get_database_manager('db2') as manager:
+            manager.drop_database()
+
+    def test_simple(self):
+        self.app.get('/', status=200)
+
+    def test_fail(self):
+        # Note: this should return 500, but on webtest
+        # exception raises before handling by nanohttp
+        with self.assertRaises(Exception):
+            self.app.get('/fail', status=500)
+
+    def test_all_sessions(self):
+        resp = self.app.get('/all_sessions')
+        for session_alias in resp.text.split(','):
+            self.assertTrue(session_alias, ['default', 'db2', 'db3', 'db4'])
+
+    def test_another_database(self):
+        self.app.get('/db2', status=200)
+
+    def test_new(self):
+        self.app.get('/new', status=200)
+
+    @mock.patch('microhttp.ext.db.database_manager.create_engine')
+    def test_database_manager(self, *_):
+        with self.assertRaises(RuntimeError):
+            with db.get_database_manager('db2') as manager:
+                manager.create_database()
+
+        with db.get_database_manager('db3') as manager:
+            manager.create_database_if_not_exists()
+            manager.create_database()
+            manager.drop_database()
+
+        with db.get_database_manager('db4') as manager:
+            manager.create_database_if_not_exists()
+            manager.create_database()
+            manager.drop_database()
+
+        settings.sqlalchemy.db4.engine.name_or_url = 'access:///'
+        with self.assertRaises(ValueError):
+            db.get_database_manager('db4').__enter__()
+
+
+if __name__ == '__main__':  # pragma: nocover
+    unittest.main()
