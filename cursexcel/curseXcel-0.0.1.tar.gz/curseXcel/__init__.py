@@ -1,0 +1,1 @@
+from .curseXcel import Table
