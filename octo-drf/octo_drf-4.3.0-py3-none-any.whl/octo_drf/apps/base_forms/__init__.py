@@ -1,0 +1,1 @@
+default_app_config = 'octo_drf.apps.base_forms.apps.BaseFormsConfig'
