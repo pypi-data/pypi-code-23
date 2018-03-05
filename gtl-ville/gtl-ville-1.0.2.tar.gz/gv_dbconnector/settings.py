@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+
+TOMTOM_FCD_SOURCE = 'TOMTOMFCD'
+METRO_PME_SOURCE = 'METROPME'
+
+DB_SRID = 4326
