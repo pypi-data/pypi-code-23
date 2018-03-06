@@ -1,0 +1,101 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+
+from argparse import ArgumentParser
+import os
+import platform
+import subprocess
+import sys
+import webbrowser
+
+def main():
+    parser = ArgumentParser()
+    parser.add_argument("--bind", default=None, type=str,
+        help="Bind specified path to the docker working directory")
+    parser.add_argument("-w", "--workdir", default="/notebook", type=str,
+        help="Workdir within the docker image")
+    parser.add_argument("--shell", default=False, action="store_true",
+        help="Start interactive shell instead of notebook service")
+    parser.add_argument("-V", "--version", type=str, default="latest",
+        help="Version of docker image (latest to fetch the latest tag)")
+    parser.add_argument("--port", default=8888, type=int,
+        help="Local port")
+    parser.add_argument("--image", default="colomoto/colomoto-docker",
+        help="Docker image")
+    parser.add_argument("--no-browser", default=False, action="store_true",
+        help="Do not start the browser")
+    parser.add_argument("--unsafe-ssl", default=False, action="store_true",
+        help="Do not check for SSL certificates")
+    parser.add_argument("docker_options", nargs="*")
+    args = parser.parse_args()
+
+    if args.version == "latest":
+        import json
+        try:
+            from urllib.request import urlopen
+        except ImportError:
+            from urllib2 import urlopen
+
+        if args.unsafe_ssl or platform.system() == "Windows":
+            # disable SSL verification...
+            import ssl
+            ssl._create_default_https_context = ssl._create_unverified_context
+
+        print("# querying for latest tag of {}...".format(args.image))
+        url_api = "https://registry.hub.docker.com/v1/repositories/{}/tags".format(args.image)
+        tags = []
+        q = urlopen(url_api)
+        r = json.load(q)
+        q.close()
+        tags = [t["name"] for t in r if len(t["name"])==10 and "-" in t["name"]]
+        if not tags:
+            print("# ... none found! use 'latest'")
+            image_tag = "latest"
+        else:
+            image_tag = max(tags)
+            print("# ... using {}".format(image_tag))
+    else:
+        image_tag = args.version
+
+    image = "%s:%s" % (args.image, image_tag)
+
+    if image_tag == "next" or not subprocess.check_output(["docker", "images", "-q", image]):
+        subprocess.run(["docker", "pull", image])
+
+    argv = ["docker", "run", "-it", "--rm", "-p", "%s:8888" % args.port]
+    if args.bind:
+        argv += ["--volume", "%s:%s" % (os.path.abspath(args.bind), args.workdir)]
+    argv += ["-w", args.workdir]
+    argv += args.docker_options
+    argv += [image]
+    if args.shell:
+        argv += ["bash"]
+
+    print("# %s" % " ".join(argv))
+
+    if not args.shell and not args.no_browser:
+
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE)
+
+        container_ip = "127.0.0.1"
+        docker_machine = os.getenv("DOCKER_MACHINE_NAME")
+        if docker_machine:
+            container_ip = subprocess.check_output(["docker-machine", "ip", docker_machine])
+            container_ip = container_ip.decode().strip().split("%")[0]
+
+        launched = False
+        while True:
+            line = os.read(p.stdout.fileno(), 1024)
+            if line:
+                os.write(sys.stdout.fileno(), line)
+                line = line.decode()
+                if not launched and "The Jupyter Notebook is running at:" in line:
+                    launched = True
+                    webbrowser.open("http://{}:{}".format(container_ip, args.port))
+            elif p.poll() is not None:
+                break
+
+    else:
+        os.execvp(argv[0], argv)
+
