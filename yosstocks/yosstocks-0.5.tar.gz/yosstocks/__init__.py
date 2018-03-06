@@ -1,0 +1,1 @@
+print("this is a stocks analysis program to work")
